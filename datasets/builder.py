@@ -42,6 +42,7 @@ from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.data.transforms import _pil_interp
 from torchvision import transforms
+from torchvision.transforms.functional import InterpolationMode
 
 from .formatting import ToDataContainer
 from .tokenizer import SimpleTokenizer
@@ -61,9 +62,10 @@ def build_loader(config):
     dataset_train = build_dataset(is_train=True, config=config)
     print(f'local rank {local_rank} / global rank {dist.get_rank()} \
         successfully build train dataset')
-    dataset_val = build_dataset(is_train=False, config=config)
-    print(f'local rank {local_rank} / global rank {dist.get_rank()} \
-        successfully build val dataset')
+    
+    # dataset_val = build_dataset(is_train=False, config=config)
+    # print(f'local rank {local_rank} / global rank {dist.get_rank()} \
+    #     successfully build val dataset')
 
     dc_collate = partial(collate, samples_per_gpu=config.batch_size)
     train_len = len(dataset_train)
@@ -92,7 +94,7 @@ def build_loader(config):
     val_len = len(dataset_val)
     val_nbatches = max(1, val_len // (config.batch_size * dist.get_world_size()))
     data_loader_val = (data_loader_val.with_epoch(val_nbatches).with_length(val_nbatches))
-
+    
     return dataset_train, dataset_val, data_loader_train, data_loader_val
 
 
@@ -151,6 +153,139 @@ def build_dataset(is_train, config):
     # yapf: enable
 
     return dataset
+
+class CopyChannel(object):
+    def __init__(self):
+        pass
+
+    def __call__(self, sample):
+        if isinstance(sample, dict):
+            transformed_sample = dict()
+            for key, image in sample.items():
+                image = transforms.functional.pil_to_tensor(image)
+                if image.size()[0] == 1:
+                    image = image.repeat([3, 1, 1])
+                image = transforms.functional.to_pil_image(image,mode='RGB')
+                transformed_sample[key] = image
+        else:
+            image = transforms.functional.pil_to_tensor(sample)
+            if image.size()[0] == 1:
+                image = image.repeat([3, 1, 1])
+            transformed_sample = transforms.functional.to_pil_image(image,mode='RGB')
+        return transformed_sample
+
+class ToTensor:
+    def __init__(self):
+        self.operator = transforms.ToTensor()
+
+    def __call__(self, sample):
+        if isinstance(sample, dict):
+            transformed_sample = dict()
+            for key, image in sample.items():
+                transformed_sample[key] = self.operator(image)
+        else:
+            transformed_sample = self.operator(sample)
+        return transformed_sample
+
+class Resize:
+    def __init__(self, size, interpolation=InterpolationMode.BILINEAR):
+        self.resize_func = transforms.Resize(size, interpolation)
+
+    def __call__(self, sample):
+        if isinstance(sample, dict):
+            transformed_sample = dict()
+            for key, image in sample.items():
+                transformed_sample[key] = self.resize_func(image)
+        else:
+            transformed_sample = self.resize_func(sample)    
+        return transformed_sample
+
+class CenterCrop:
+    def __init__(self, size, interpolation=InterpolationMode.BILINEAR):
+        self.crop_func = transforms.CenterCrop(size)
+
+    def __call__(self, sample):
+        if isinstance(sample, dict):
+            transformed_sample = dict()
+            for key, image in sample.items():
+                transformed_sample[key] = self.crop_func(image)
+        else:
+            transformed_sample = self.crop_func(sample)    
+        return transformed_sample
+
+class Normalize:
+    def __init__(self, mean, std, inplace=False):
+        self.normalize_func = transforms.Normalize(mean, std, inplace)
+
+    def __call__(self, sample):
+        if isinstance(sample, dict):
+            transformed_sample = dict()
+            
+            image = self.normalize_func(sample['image'])
+            bseg =  self.normalize_func(sample['bseg'])
+            mseg =  self.normalize_func(sample['mseg']) 
+            bseg = (bseg > 0).float()
+            mseg = (mseg > 0).float()
+            segs = torch.cat([bseg, mseg], dim=0)
+            transformed_sample = {'image':image, 'seg': segs}
+        else:
+            transformed_sample = self.normalize_func(sample)    
+        return transformed_sample
+
+
+class Standardizer(object):
+    def __init__(self):
+        pass
+
+    def __call__(self, image):
+        image = (image - image.mean()) / np.maximum(image.std(), 10 ** (-5))
+        return image
+    
+def build_breast_transform(is_train, config, with_dc=True):
+    if not config.deit_aug:
+        if is_train:
+            transform = transforms.Compose([
+                transforms.RandomResizedCrop(config.img_size, scale=config.img_scale),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
+            ])
+        else:
+            transform = transforms.Compose([
+                Resize(config.img_size + 32),
+                CenterCrop(config.img_size),
+                ToTensor(),
+                Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
+            ])
+
+        return transform
+
+    if is_train:
+        # this should always dispatch to transforms_imagenet_train
+        transform = create_transform(
+            input_size=config.img_size,
+            is_training=True,
+            color_jitter=config.color_jitter if config.color_jitter > 0 else None,
+            auto_augment=config.auto_augment if config.auto_augment != 'none' else None,
+            re_prob=config.re_prob,
+            re_mode=config.re_mode,
+            re_count=config.re_count,
+            interpolation=config.interpolation,
+        )
+    else:
+        size = int((256 / 224) * config.img_size)
+        transform = transforms.Compose([
+            Resize(size, interpolation= _pil_interp(config.interpolation)),#InterpolationMode.BILINEAR),
+            CenterCrop(config.img_size),
+            ToTensor(),
+            Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
+        ])
+
+    if with_dc:
+        transform = transforms.Compose([CopyChannel(),
+                                        *transform.transforms, 
+                                        ToDataContainer()])
+    return transform
 
 
 def build_img_transform(is_train, config, with_dc=True):
@@ -232,7 +367,7 @@ class Tokenize:
         if isinstance(texts, str):
             texts = [texts]
             expanded_dim = True
-
+            
         sot_token = self.tokenizer.encoder['<|startoftext|>']
         eot_token = self.tokenizer.encoder['<|endoftext|>']
         all_tokens = [[sot_token] + self.tokenizer.encode(text) + [eot_token] for text in texts]

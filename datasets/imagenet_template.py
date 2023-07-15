@@ -265,3 +265,6 @@ imagenet_classes = [
     'rose hip', 'horse chestnut seed', 'coral fungus', 'agaric', 'gyromitra', 'stinkhorn mushroom', 'earth star fungus',
     'hen of the woods mushroom', 'bolete', 'corn cob', 'toilet paper'
 ]
+
+
+breast_classes = ['benign', 'malignant']

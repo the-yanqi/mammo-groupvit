@@ -34,6 +34,9 @@ def get_config(args):
     if hasattr(args, 'batch_size') and args.batch_size:
         cfg.data.batch_size = args.batch_size
 
+    if hasattr(args, 'slurm') and args.slurm:
+        cfg.train.slurm = args.slurm
+
     if hasattr(args, 'amp_opt_level') and args.amp_opt_level:
         cfg.train.amp_opt_level = args.amp_opt_level
 

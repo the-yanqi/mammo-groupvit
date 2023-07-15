@@ -25,9 +25,18 @@ class ToDataContainer(object):
         Returns:
             DataContainer
         """
-        if isinstance(sample, int):
-            sample = torch.tensor(sample)
-        return DC(sample, stack=True, pad_dims=None)
+        if isinstance(sample, dict):
+            transformed_sample = dict()
+            for key,value in sample.items():
+                if isinstance(value, int):
+                    sample = torch.tensor(value)
+                transformed_sample[key] = DC(value, stack=True, pad_dims=None)
+            return transformed_sample 
+        else:
+            if isinstance(sample, int):
+                sample = torch.tensor(sample)
+            return DC(sample, stack=True, pad_dims=None)
+       
 
     def __repr__(self):
         return self.__class__.__name__

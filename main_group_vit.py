@@ -29,6 +29,7 @@
 import argparse
 import datetime
 import os
+import subprocess
 import os.path as osp
 import time
 from collections import defaultdict
@@ -37,7 +38,7 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from datasets import build_loader, build_text_transform, imagenet_classes
+from datasets import build_loader, build_text_transform, imagenet_classes, breast_classes, build_breast_dataloader
 from mmcv.parallel import MMDistributedDataParallel
 from mmcv.runner import get_dist_info, init_dist, set_random_seed
 from mmcv.utils import collect_env, get_git_hash
@@ -60,14 +61,14 @@ def parse_args():
     parser = argparse.ArgumentParser('GroupViT training and evaluation script')
     parser.add_argument('--cfg', type=str, required=True, help='path to config file')
     parser.add_argument('--opts', help="Modify config options by adding 'KEY=VALUE' list. ", default=None, nargs='+')
-
+    parser.add_argument('--slurm', action='store_true', help='Whether environment on slurm')
     # easy config modification
     parser.add_argument('--batch-size', type=int, help='batch size for single GPU')
     parser.add_argument('--resume', help='resume from checkpoint')
     parser.add_argument(
         '--amp-opt-level',
         type=str,
-        default='O1',
+        default='O0',
         choices=['O0', 'O1', 'O2'],
         help='mixed precision opt level, if O0, no amp is used')
     parser.add_argument(
@@ -99,9 +100,10 @@ def train(cfg):
         wandb = None
     # waiting wandb init
     dist.barrier()
-    dataset_train, dataset_val, \
-        data_loader_train, data_loader_val = build_loader(cfg.data)
-    data_loader_seg = build_seg_dataloader(build_seg_dataset(cfg.evaluate.seg))
+    
+    dataset_train, dataset_val, dataset_test,\
+        data_loader_train, data_loader_val , data_loader_test = build_breast_dataloader(cfg.data, load_seg=('seg' in cfg.evaluate.task))
+#    data_loader_seg = build_seg_dataloader(build_seg_dataset(cfg.evaluate.seg))
 
     logger = get_logger()
 
@@ -149,15 +151,15 @@ def train(cfg):
     logger.info('Start training')
     start_time = time.time()
     for epoch in range(cfg.train.start_epoch, cfg.train.epochs):
-        loss_train_dict = train_one_epoch(cfg, model, data_loader_train, optimizer, epoch, lr_scheduler)
-        if dist.get_rank() == 0 and (epoch % cfg.checkpoint.save_freq == 0 or epoch == (cfg.train.epochs - 1)):
-            save_checkpoint(cfg, epoch, model_without_ddp, {
-                'max_accuracy': max_accuracy,
-                'max_miou': max_miou
-            }, optimizer, lr_scheduler)
-        dist.barrier()
-        loss_train = loss_train_dict['total_loss']
-        logger.info(f'Avg loss of the network on the {len(dataset_train)} train images: {loss_train:.2f}')
+        # loss_train_dict = train_one_epoch(cfg, model, data_loader_train, optimizer, epoch, lr_scheduler)
+        # if dist.get_rank() == 0 and (epoch % cfg.checkpoint.save_freq == 0 or epoch == (cfg.train.epochs - 1)):
+        #     save_checkpoint(cfg, epoch, model_without_ddp, {
+        #         'max_accuracy': max_accuracy,
+        #         'max_miou': max_miou
+        #     }, optimizer, lr_scheduler)
+        # dist.barrier()
+        # loss_train = loss_train_dict['total_loss']
+        # logger.info(f'Avg loss of the network on the {len(dataset_train)} train images: {loss_train:.2f}')
 
         # evaluate
         if (epoch % cfg.evaluate.eval_freq == 0 or epoch == (cfg.train.epochs - 1)):
@@ -320,11 +322,11 @@ def validate_cls(config, data_loader, model):
             build_dataset_class_tokens(text_transform, config.evaluate.cls.template, imagenet_classes)))
     logger.info('Zero shot classifier built')
     for idx, samples in enumerate(data_loader):
-        target = samples.pop('target').data[0].cuda()
-        target = data2cuda(target)
+        target = samples.pop('target').cuda()
+        target = data2cuda(target).long()
 
         # compute output
-        output = model(**samples, text=text_embedding)
+        output = model(image = samples['image'], text=text_embedding)
 
         # measure accuracy and record loss
         loss = criterion(output, target)
@@ -399,13 +401,42 @@ def validate_seg(config, data_loader, model):
 def main():
     args = parse_args()
     cfg = get_config(args)
-
+    
     if cfg.train.amp_opt_level != 'O0':
         assert amp is not None, 'amp not installed!'
 
     # start faster ref: https://github.com/open-mmlab/mmdetection/pull/7036
     mp.set_start_method('fork', force=True)
-    init_dist('pytorch')
+
+    # if 'SLURM_PROCID' in os.environ:
+    #     print('2')
+    #     proc_id = int(os.environ['SLURM_PROCID'])
+    #     ntasks = int(os.environ['SLURM_NTASKS'])
+    #     node_list = os.environ['SLURM_NODELIST']
+    #     num_gpus = torch.cuda.device_count()
+    #     addr = subprocess.getoutput(
+    #         'scontrol show hostname {} | head -n1'.format(node_list))
+    #     os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '29500')
+    #     os.environ['MASTER_ADDR'] = addr
+    #     print(addr)
+    #     print(os.environ['MASTER_PORT'])
+    #     os.environ['WORLD_SIZE'] = str(ntasks)
+    #     os.environ['RANK'] = str(proc_id)
+    #     os.environ['LOCAL_RANK'] = str(proc_id % num_gpus)
+    #     os.environ['LOCAL_SIZE'] = str(num_gpus)
+    #     dist_url = 'env://'
+    #     world_size = ntasks
+    #     rank = proc_id
+    #     gpu = proc_id % num_gpus
+
+    # dist_backend = 'nccl'
+
+    if cfg.train.slurm:
+        init_dist('slurm')
+    else:
+        init_dist('pytorch')#,backend=dist_backend, init_method=dist_url,world_size=world_size, rank=rank)
+    print('finish init')
+
     rank, world_size = get_dist_info()
     print(f'RANK and WORLD_SIZE in environ: {rank}/{world_size}')
 

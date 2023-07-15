@@ -11,7 +11,7 @@
 _base_ = ['../custom_import.py']
 # dataset settings
 dataset_type = 'COCOObjectDataset'
-data_root = 'local_data/coco'
+data_root = '/gpfs/data/geraslab/public_datasets/coco'
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 test_pipeline = [
     dict(type='LoadImageFromFile'),
@@ -33,8 +33,8 @@ data = dict(
     test=dict(
         type=dataset_type,
         data_root=data_root,
-        img_dir='images/val2017',
-        ann_dir='annotations/val2017',
+        img_dir='val2017',
+        ann_dir='annotations',
         pipeline=test_pipeline))
 
 # test_cfg = dict(bg_thresh=.95, mode='whole')
