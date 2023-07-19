@@ -267,4 +267,4 @@ imagenet_classes = [
 ]
 
 
-breast_classes = ['benign', 'malignant']
+breast_classes =['mass','calcification','architectural distortion', 'asymmetry']

@@ -9,7 +9,8 @@
 # -------------------------------------------------------------------------
 
 from .coco_object import COCOObjectDataset
+from .breast_cancer import BreastCancerDataset, LoadBreastImageFromFile
 from .pascal_context import PascalContextDataset
 from .pascal_voc import PascalVOCDataset
 
-__all__ = ['COCOObjectDataset', 'PascalContextDataset', 'PascalVOCDataset']
+__all__ = ['COCOObjectDataset', 'PascalContextDataset', 'PascalVOCDataset','BreastCancerDataset', 'LoadBreastImageFromFile']

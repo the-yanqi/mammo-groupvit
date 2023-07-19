@@ -9,7 +9,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from datasets.breast_data import datasets, transformations
+from breast_datasets import ImageTextDataset, BreastDataset
 from datasets.builder import build_text_transform, build_breast_transform
 
 def worker_init_fn(worker_id, num_workers, rank, seed):
@@ -51,7 +51,7 @@ def get_breast_dataset(datalist_dir,
     ts_text_transformations = build_text_transform(is_train=False, config=config.text_aug)
     
     if data_mode == 'image':
-        tr_ds = datasets.ImageTextDataset(data_list=train_dl,
+        tr_ds = ImageTextDataset(data_list=train_dl,
                                           img_dir=img_dir,
                                           seg_dir=segmentation_dir,
                                           imaging_modality=imaging_modality,
@@ -59,19 +59,19 @@ def get_breast_dataset(datalist_dir,
                                           text_transformations=training_text_transformations, 
                                           is_train=True,
                                           load_seg=False)
-        val_ds = datasets.ImageTextDataset(val_dl, img_dir, segmentation_dir, imaging_modality, val_transformations,  
+        val_ds = ImageTextDataset(val_dl, img_dir, segmentation_dir, imaging_modality, val_transformations,  
                                         val_text_transformations,is_train=False,load_seg=load_seg)
-        ts_ds = datasets.ImageTextDataset(ts_dl, img_dir, segmentation_dir, imaging_modality, ts_transformations, 
+        ts_ds = ImageTextDataset(ts_dl, img_dir, segmentation_dir, imaging_modality, ts_transformations, 
                                         val_text_transformations,is_train=False,load_seg=load_seg)
     elif data_mode == 'breast':
-        train_dl = datasets.BreastDataset.group_dl_for_breast(train_dl)
-        val_dl = datasets.BreastDataset.group_dl_for_breast(val_dl)
-        ts_dl = datasets.BreastDataset.group_dl_for_breast(ts_dl)
+        train_dl = BreastDataset.group_dl_for_breast(train_dl)
+        val_dl = BreastDataset.group_dl_for_breast(val_dl)
+        ts_dl = BreastDataset.group_dl_for_breast(ts_dl)
 
         
-        tr_ds = datasets.BreastDataset(train_dl, img_dir, segmentation_dir, training_transformations)
-        val_ds = datasets.BreastDataset(val_dl, img_dir, segmentation_dir, val_transformations)
-        ts_ds = datasets.BreastDataset(ts_dl, img_dir, segmentation_dir, test_transformations)
+        tr_ds = BreastDataset(train_dl, img_dir, segmentation_dir, training_transformations)
+        val_ds = BreastDataset(val_dl, img_dir, segmentation_dir, val_transformations)
+        ts_ds = BreastDataset(ts_dl, img_dir, segmentation_dir, test_transformations)
     
     return tr_ds, val_ds, ts_ds
 

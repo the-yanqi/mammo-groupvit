@@ -179,6 +179,23 @@ def resolve_cancer_label(datum, cancer_label_col="image_cancer_label_mml"):
         else:
             return torch.Tensor([birads_mapping[label]]).long()
 
+def resolve_label(data_pac, label, breast_classes):
+    if label == 'abnormality':
+        text = data_pac['observation'].lower()
+        label_list = []
+        for i, bclass in enumerate(breast_classes):
+            if bclass in text:
+                label_list.append(1)
+            else:
+                label_list.append(0) 
+        tensor_label = torch.Tensor(label_list)
+
+    elif label == 'cancer':
+        tensor_label = resolve_cancer_label(data_pac)
+    else:
+        raise ValueError(f"bad label type: {label}") 
+
+    return tensor_label
 
 def load_single_image(data_pac, img_dir, seg_dir, transformations, index,
                       anno_prepare_func,
@@ -240,7 +257,7 @@ def load_single_image(data_pac, img_dir, seg_dir, transformations, index,
 
 def load_single_image_text(data_pac,img_dir,seg_dir,image_transformations,text_transformations, 
                             load_img_func, load_segmentation_func, index, 
-                            is_train=True, load_seg=False):
+                            is_train=True, load_seg=False, cls_classes=['cancer']):
     
     img_pil = load_img_func(data_pac, img_dir)
     
@@ -259,8 +276,8 @@ def load_single_image_text(data_pac,img_dir,seg_dir,image_transformations,text_t
         text = text_transformations(data_pac['observation'])
         results['text'] = text
     else:
-        cancer_label = resolve_cancer_label(data_pac)
-        results['target'] = cancer_label
+        label = resolve_label(data_pac,'abnormality', cls_classes)
+        results['target'] = label
     return results
 
 def collect_annotations(bseg, mseg):
@@ -495,6 +512,8 @@ class BreastDataset(Dataset):
 class ImageTextDataset(Dataset):
     def __init__(self, data_list, img_dir, seg_dir, imaging_modality, image_transformations, text_transformations,
                  check_positive_func=img_dl_pos_func, pos_to_neg_ratio=None, num_positives = None, is_train=True, load_seg = False):
+
+        self.cls_classes = ['mass','calcification','architectural distortion', 'asymmetr'] 
         # purge datalist:
         self.pos_to_neg_ratio = pos_to_neg_ratio
         self.check_positive_func = check_positive_func
@@ -556,7 +575,8 @@ class ImageTextDataset(Dataset):
                                  load_segmentation_func=self.load_segmentation_func, 
                                  index=index,
                                  is_train=self.is_train,
-                                 load_seg=self.load_seg)
+                                 load_seg=self.load_seg,
+                                 cls_classes=self.cls_classes)
 
     def __len__(self):
         return len(self.data_list)

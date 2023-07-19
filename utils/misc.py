@@ -15,6 +15,28 @@ import torch
 import torch.distributed as dist
 from datasets import template_meta
 
+def gather_tensors(tensor):
+    """
+    Gather tensors from different processes in a group.
+    All tensors should be on the same device.
+
+    Arguments:
+    - tensor: tensor to be gathered from each process.
+
+    Returns: 
+    - list[Tensor]: list of tensors gathered from each process.
+    """
+    # Get current global rank
+    rank = dist.get_rank()
+
+    # Get the number of processes
+    num_processes = dist.get_world_size()
+
+    # All gather operation
+    gathered_tensor_list = [torch.zeros_like(tensor) for _ in range(num_processes)]
+    dist.all_gather(gathered_tensor_list, tensor)
+
+    return gathered_tensor_list
 
 def reduce_tensor(tensor):
     rt = tensor.clone()

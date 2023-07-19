@@ -47,7 +47,9 @@ from models import build_model
 from omegaconf import OmegaConf, read_write
 from segmentation.evaluation import build_seg_dataloader, build_seg_dataset, build_seg_inference
 from timm.utils import AverageMeter, accuracy
-from utils import (auto_resume_helper, build_dataset_class_tokens, build_optimizer, build_scheduler, data2cuda,
+#from torcheval.metrics import AUC
+from sklearn.metrics import roc_auc_score
+from utils import (auto_resume_helper, build_dataset_class_tokens, build_optimizer, build_scheduler, data2cuda, gather_tensors,
                    get_config, get_grad_norm, get_logger, load_checkpoint, parse_losses, reduce_tensor, save_checkpoint)
 
 try:
@@ -100,10 +102,10 @@ def train(cfg):
         wandb = None
     # waiting wandb init
     dist.barrier()
-    
+        
     dataset_train, dataset_val, dataset_test,\
-        data_loader_train, data_loader_val , data_loader_test = build_breast_dataloader(cfg.data, load_seg=('seg' in cfg.evaluate.task))
-#    data_loader_seg = build_seg_dataloader(build_seg_dataset(cfg.evaluate.seg))
+        data_loader_train, data_loader_val , data_loader_test = build_breast_dataloader(cfg.data, load_seg=False)
+    data_loader_seg = build_seg_dataloader(build_seg_dataset(cfg.evaluate.seg))
 
     logger = get_logger()
 
@@ -133,49 +135,49 @@ def train(cfg):
         else:
             logger.info(f'no checkpoint found in {cfg.output}, ignoring auto resume')
 
-    max_accuracy = max_miou = 0.0
-    max_metrics = {'max_accuracy': max_accuracy, 'max_miou': max_miou}
+    max_auroc = max_miou = 0.0
+    max_metrics = {'max_auroc': max_auroc, 'max_miou': max_miou}
 
     if cfg.checkpoint.resume:
         max_metrics = load_checkpoint(cfg, model_without_ddp, optimizer, lr_scheduler)
-        max_accuracy, max_miou = max_metrics['max_accuracy'], max_metrics['max_miou']
+        max_auroc, max_miou = max_metrics['max_auroc'], max_metrics['max_miou']
         if 'cls' in cfg.evaluate.task:
-            acc1, acc5, loss = validate_cls(cfg, data_loader_val, model)
-            logger.info(f'Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%')
+            acc1, loss, auroc = validate_cls(cfg, data_loader_val, model)
+            logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc}%')
         if 'seg' in cfg.evaluate.task:
             miou = validate_seg(cfg, data_loader_seg, model)
-            logger.info(f'mIoU of the network on the {len(data_loader_seg.dataset)} test images: {miou:.2f}%')
+            logger.info(f'mIoU of the network on the {len(data_loader_val.dataset)} test images: {miou:.2f}%')
         if cfg.evaluate.eval_only:
             return
 
     logger.info('Start training')
     start_time = time.time()
     for epoch in range(cfg.train.start_epoch, cfg.train.epochs):
-        # loss_train_dict = train_one_epoch(cfg, model, data_loader_train, optimizer, epoch, lr_scheduler)
-        # if dist.get_rank() == 0 and (epoch % cfg.checkpoint.save_freq == 0 or epoch == (cfg.train.epochs - 1)):
-        #     save_checkpoint(cfg, epoch, model_without_ddp, {
-        #         'max_accuracy': max_accuracy,
-        #         'max_miou': max_miou
-        #     }, optimizer, lr_scheduler)
-        # dist.barrier()
-        # loss_train = loss_train_dict['total_loss']
-        # logger.info(f'Avg loss of the network on the {len(dataset_train)} train images: {loss_train:.2f}')
+        loss_train_dict = train_one_epoch(cfg, model, data_loader_train, optimizer, epoch, lr_scheduler)
+        if dist.get_rank() == 0 and (epoch % cfg.checkpoint.save_freq == 0 or epoch == (cfg.train.epochs - 1)):
+            save_checkpoint(cfg, epoch, model_without_ddp, {
+                'max_auroc': max_auroc,
+                'max_miou': max_miou
+            }, optimizer, lr_scheduler)
+        dist.barrier()
+        loss_train = loss_train_dict['total_loss']
+        logger.info(f'Avg loss of the network on the {len(dataset_train)} train images: {loss_train:.2f}')
 
         # evaluate
         if (epoch % cfg.evaluate.eval_freq == 0 or epoch == (cfg.train.epochs - 1)):
             if 'cls' in cfg.evaluate.task:
-                acc1, acc5, loss = validate_cls(cfg, data_loader_val, model)
-                logger.info(f'Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%')
-                max_metrics['max_accuracy'] = max(max_metrics['max_accuracy'], acc1)
-                if cfg.evaluate.cls.save_best and dist.get_rank() == 0 and acc1 > max_accuracy:
+                acc1, loss, auroc = validate_cls(cfg, data_loader_val, model)
+                logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc}')
+                max_metrics['max_auroc'] = max(max_metrics['max_auroc'], auroc.mean())
+                if cfg.evaluate.cls.save_best and dist.get_rank() == 0 and auroc.mean() > max_auroc:
                     save_checkpoint(
-                        cfg, epoch, model_without_ddp, max_metrics, optimizer, lr_scheduler, suffix='best_acc1')
+                        cfg, epoch, model_without_ddp, max_metrics, optimizer, lr_scheduler, suffix='best_auroc')
                 dist.barrier()
-                max_accuracy = max_metrics['max_accuracy']
-                logger.info(f'Max accuracy: {max_accuracy:.2f}%')
+                max_auroc = max_metrics['max_auroc']
+                logger.info(f'Max AUROC: {max_auroc:.2f}%')
             if 'seg' in cfg.evaluate.task:
                 miou = validate_seg(cfg, data_loader_seg, model)
-                logger.info(f'mIoU of the network on the {len(data_loader_seg.dataset)} test images: {miou:.2f}%')
+                logger.info(f'mIoU of the network on the {len(data_loader_val.dataset)} test images: {miou:.2f}%')
                 max_metrics['max_miou'] = max(max_metrics['max_miou'], miou)
                 if cfg.evaluate.seg.save_best and dist.get_rank() == 0 and miou > max_miou:
                     save_checkpoint(
@@ -188,7 +190,6 @@ def train(cfg):
             log_stat = {f'epoch/train_{k}': v for k, v in loss_train_dict.items()}
             log_stat.update({
                 'epoch/val_acc1': acc1,
-                'epoch/val_acc5': acc5,
                 'epoch/val_loss': loss,
                 'epoch/val_miou': miou,
                 'epoch/epoch': epoch,
@@ -305,13 +306,15 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
 def validate_cls(config, data_loader, model):
     logger = get_logger()
     dist.barrier()
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.BCEWithLogitsLoss()#torch.nn.CrossEntropyLoss()
     model.eval()
 
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     acc1_meter = AverageMeter()
-    acc5_meter = AverageMeter()
+    all_preds = []
+    all_targets = [] 
+    #auc_metric = AUC()
 
     text_transform = build_text_transform(False, config.data.text_aug, with_dc=False)
 
@@ -319,27 +322,31 @@ def validate_cls(config, data_loader, model):
     logger.info('Building zero shot classifier')
     text_embedding = data2cuda(
         model.module.build_text_embedding(
-            build_dataset_class_tokens(text_transform, config.evaluate.cls.template, imagenet_classes)))
+            build_dataset_class_tokens(text_transform, config.evaluate.cls.template, breast_classes)))
     logger.info('Zero shot classifier built')
     for idx, samples in enumerate(data_loader):
         target = samples.pop('target').cuda()
-        target = data2cuda(target).long()
+        target = data2cuda(target)
 
         # compute output
         output = model(image = samples['image'], text=text_embedding)
-
+ 
         # measure accuracy and record loss
         loss = criterion(output, target)
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        
+        acc1, _ = accuracy(output[:,:1], target[:,:1], topk=(1, 1))
 
         acc1 = reduce_tensor(acc1)
-        acc5 = reduce_tensor(acc5)
         loss = reduce_tensor(loss)
 
         loss_meter.update(loss.item(), target.size(0))
         acc1_meter.update(acc1.item(), target.size(0))
-        acc5_meter.update(acc5.item(), target.size(0))
+        
+        all_preds.append(output)
+        all_targets.append(target)
 
+        #auc_metric.update(output.permute(1,0), target.permute(1,0))
+       
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -350,14 +357,23 @@ def validate_cls(config, data_loader, model):
                         f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                         f'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
                         f'Acc@1 {acc1_meter.val:.3f} ({acc1_meter.avg:.3f})\t'
-                        f'Acc@5 {acc5_meter.val:.3f} ({acc5_meter.avg:.3f})\t'
                         f'Mem {memory_used:.0f}MB')
+    #aucs = auc_metric.compute()
+    #auc_metric.reset()
+    gathered_preds = gather_tensors(torch.cat(all_preds))
+    gathered_targets = gather_tensors(torch.cat(all_targets))
+    if dist.get_rank() == 0:
+        gathered_preds = torch.cat(gathered_preds).cpu().numpy()
+        gathered_targets = torch.cat(gathered_targets).cpu().numpy()
+        auroc = roc_auc_score(gathered_targets, gathered_preds)   
+    else:
+        auroc = [0,0,0,0]
     logger.info('Clearing zero shot classifier')
     torch.cuda.empty_cache()
-    logger.info(f' * Acc@1 {acc1_meter.avg:.3f} Acc@5 {acc5_meter.avg:.3f}')
+    logger.info(f' * Acc@1 {acc1_meter.avg:.3f}')
+    logger.info(f' * AUROC {auroc}')
     dist.barrier()
-    return acc1_meter.avg, acc5_meter.avg, loss_meter.avg
-
+    return acc1_meter.avg, loss_meter.avg, auroc
 
 @torch.no_grad()
 def validate_seg(config, data_loader, model):

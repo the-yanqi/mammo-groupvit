@@ -31,7 +31,7 @@ train:
 evaluate:
   seg:
     save_best: true
-    cfg: /gpfs/data/geraslab/Yanqi/image-to-text/mammo-groupvit/segmentation/configs/_base_/datasets/coco.py
+    cfg: /gpfs/data/geraslab/Yanqi/image-to-text/mammo-groupvit/segmentation/configs/_base_/datasets/breast_cancer.py
     template: simple
     opts: []
   task:
