@@ -15,6 +15,7 @@ from mmseg.datasets.builder import PIPELINES
 from mmseg.utils import get_root_logger
 import torchvision.transforms.functional as F
 from breast_datasets import load_mammogram_img, load_segmentation_mammogram
+import os 
 
 @DATASETS.register_module()
 class BreastCancerDataset(CustomDataset):
@@ -27,8 +28,9 @@ class BreastCancerDataset(CustomDataset):
 
     PALETTE = [[0, 0, 0], [0, 192, 64], [0, 192, 64]]
 
-    def __init__(self, datalist_dir, dataset_type='val', **kwargs):
+    def __init__(self, datalist_dir, datalist_prefix, dataset_type='val', **kwargs):
         self.datalist_dir = datalist_dir 
+        self.datalist_prefix = datalist_prefix
         self.dataset_type = dataset_type 
         super(BreastCancerDataset, self).__init__(**kwargs)
     
@@ -52,9 +54,9 @@ class BreastCancerDataset(CustomDataset):
         self.gt_seg_map_loader = LoadBreastAnnotations(reduce_zero_label=self.reduce_zero_label)
 
         with open(self.datalist_dir, "rb") as f:
-            train_dl, val_dl, ts_dl = pickle.load(f)
+            meta_datalist = pickle.load(f)
 
-        img_info = ts_dl if self.dataset_type == 'test' else val_dl
+        img_info = meta_datalist[self.dataset_type]
         print_log(f'Loaded {len(img_info)} images', logger=get_root_logger())
         return img_info 
 
@@ -68,15 +70,22 @@ class BreastCancerDataset(CustomDataset):
             dict: Training data and annotation after pipeline with new keys
                 introduced by pipeline.
         """
+        meta_data_pac = self.img_infos[idx]
+        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl_file']), "rb") as f:
+            data = pickle.load(f)
+        img_info = data[meta_data_pac['file_idx']]
 
-        img_info = self.img_infos[idx]
         results = dict(img_info=img_info)
         self.pre_pipeline(results)
         return self.pipeline(results)
     
     def get_gt_seg_map_by_idx(self, idx):
         """Get one ground truth segmentation map for evaluation."""
-        ann_info = self.img_infos[idx]
+        meta_data_pac = self.img_infos[idx]
+        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl_file']), "rb") as f:
+            data = pickle.load(f)
+        ann_info = data[meta_data_pac['file_idx']]
+
         results = dict(ann_info=ann_info)
         self.pre_pipeline(results)
         self.gt_seg_map_loader(results)

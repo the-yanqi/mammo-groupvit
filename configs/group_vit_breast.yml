@@ -22,7 +22,8 @@ model:
   output_dim: 256
   multi_label: ${data.text_aug.multi_label} # multi_label=0 is better for RedCap
 data:
-  datalist_dir: /gpfs/data/geraslab/Yanqi/notebooks/multimodal-image-text/mammo_jp_09082022_withreport.pkl
+  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist.pkl
+  datalist_prefix: /gpfs/data/geraslab/Yanqi/image-to-text/mammo_data
   img_dir: /gpfs/data/geraslab/jp4989/data/2021.07.16.combined_ffdm_cropped
   segmentation_dir: /gpfs/data/geraslab/jp4989/extract_dbt_segmentation/2022.06.12.cropped_segmentation
   batch_size: 128

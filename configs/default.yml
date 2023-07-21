@@ -92,7 +92,7 @@ evaluate:
     opts: []
 
 checkpoint:
-  auto_resume: true
+  auto_resume: False
   resume: ''
   freq: 1
   max_kept: -1

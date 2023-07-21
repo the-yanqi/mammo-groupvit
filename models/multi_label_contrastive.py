@@ -290,6 +290,7 @@ class MultiLabelContrastive(nn.Module):
     @torch.no_grad()
     def zero_shot_pred(self, image, text):
         # [B, C]
+        print('inside',image.is_cuda)
         image_features = self.encode_image(image)
         image_features = F.normalize(image_features, dim=-1)
 

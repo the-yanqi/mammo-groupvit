@@ -6,6 +6,7 @@ from bisect import bisect_left
 
 from PIL import Image
 import numpy as np
+import pickle
 from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
@@ -510,7 +511,7 @@ class BreastDataset(Dataset):
         return len(self.data_list)
 
 class ImageTextDataset(Dataset):
-    def __init__(self, data_list, img_dir, seg_dir, imaging_modality, image_transformations, text_transformations,
+    def __init__(self, data_list, datalist_prefix, img_dir, seg_dir, imaging_modality, image_transformations, text_transformations,
                  check_positive_func=img_dl_pos_func, pos_to_neg_ratio=None, num_positives = None, is_train=True, load_seg = False):
 
         self.cls_classes = ['mass','calcification','architectural distortion', 'asymmetr'] 
@@ -519,15 +520,17 @@ class ImageTextDataset(Dataset):
         self.check_positive_func = check_positive_func
         self.num_positives = num_positives
         self.data_list = data_list.copy()
+        self.datalist_prefix = datalist_prefix
         self.is_train = is_train
         self.load_seg = load_seg
-        # Update pos and neg cases
-        self.positive_cases = [x for x in self.data_list if self.check_positive_func(x)]
-        self.negative_cases = [x for x in self.data_list if not self.check_positive_func(x)]
-        # Resample if requested
+
+        # Need to modify for new datalist
+        # self.positive_cases = [x for x in self.data_list if self.check_positive_func(x)]
+        # self.negative_cases = [x for x in self.data_list if not self.check_positive_func(x)]
+        # # Resample if requested
         
-        if self.pos_to_neg_ratio is not None:
-            self.resample()
+        # if self.pos_to_neg_ratio is not None:
+        #     self.resample()
             
         self.img_dir = img_dir
         self.seg_dir = seg_dir
@@ -567,7 +570,11 @@ class ImageTextDataset(Dataset):
 
    
     def __getitem__(self, index):
-        data_pac = self.data_list[index]
+        meta_data_pac = self.data_list[index]
+        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl_file']), "rb") as f:
+            data = pickle.load(f)
+        data_pac = data[meta_data_pac['file_idx']]
+        
         return load_single_image_text(data_pac=data_pac, img_dir=self.img_dir, seg_dir = self.seg_dir,
                                  image_transformations=self.image_transformations,
                                  text_transformations=self.text_transformations, 

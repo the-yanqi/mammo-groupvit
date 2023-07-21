@@ -20,6 +20,7 @@ def worker_init_fn(worker_id, num_workers, rank, seed):
     random.seed(worker_seed)
     
 def get_breast_dataset(datalist_dir,
+                      datalist_prefix,
                       img_dir,
                       segmentation_dir,
                       data_mode,
@@ -39,7 +40,7 @@ def get_breast_dataset(datalist_dir,
     """
     # step #1: load data list
     with open(datalist_dir, "rb") as f:
-        train_dl, val_dl, ts_dl = pickle.load(f)
+        meta_datalist = pickle.load(f)
 
 
     training_transformations = build_breast_transform(is_train=True,config=config.img_aug)
@@ -51,7 +52,8 @@ def get_breast_dataset(datalist_dir,
     ts_text_transformations = build_text_transform(is_train=False, config=config.text_aug)
     
     if data_mode == 'image':
-        tr_ds = ImageTextDataset(data_list=train_dl,
+        tr_ds = ImageTextDataset(data_list=meta_datalist['train'],
+                                 datalist_prefix = datalist_prefix,
                                           img_dir=img_dir,
                                           seg_dir=segmentation_dir,
                                           imaging_modality=imaging_modality,
@@ -59,14 +61,14 @@ def get_breast_dataset(datalist_dir,
                                           text_transformations=training_text_transformations, 
                                           is_train=True,
                                           load_seg=False)
-        val_ds = ImageTextDataset(val_dl, img_dir, segmentation_dir, imaging_modality, val_transformations,  
+        val_ds = ImageTextDataset(meta_datalist['val'], datalist_prefix, img_dir, segmentation_dir, imaging_modality, val_transformations,  
                                         val_text_transformations,is_train=False,load_seg=load_seg)
-        ts_ds = ImageTextDataset(ts_dl, img_dir, segmentation_dir, imaging_modality, ts_transformations, 
+        ts_ds = ImageTextDataset(meta_datalist['test'], datalist_prefix, img_dir, segmentation_dir, imaging_modality, ts_transformations, 
                                         val_text_transformations,is_train=False,load_seg=load_seg)
     elif data_mode == 'breast':
-        train_dl = BreastDataset.group_dl_for_breast(train_dl)
-        val_dl = BreastDataset.group_dl_for_breast(val_dl)
-        ts_dl = BreastDataset.group_dl_for_breast(ts_dl)
+        train_dl = BreastDataset.group_dl_for_breast(meta_datalist['train'])
+        val_dl = BreastDataset.group_dl_for_breast(meta_datalist['val'])
+        ts_dl = BreastDataset.group_dl_for_breast(meta_datalist['test'])
 
         
         tr_ds = BreastDataset(train_dl, img_dir, segmentation_dir, training_transformations)
@@ -83,6 +85,7 @@ def build_breast_dataloader(config, data_mode="image" ,imaging_modality="mammo",
     rank = dist.get_rank()
 
     dataset_train, dataset_val, dataset_test = get_breast_dataset(config.datalist_dir,
+                      config.datalist_prefix,
                       config.img_dir,
                       config.segmentation_dir,
                       data_mode,

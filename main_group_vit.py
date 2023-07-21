@@ -29,10 +29,12 @@
 import argparse
 import datetime
 import os
+import psutil
 import subprocess
 import os.path as osp
 import time
 from collections import defaultdict
+import numpy as np
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -90,6 +92,8 @@ def parse_args():
 
 
 def train(cfg):
+    print('Start in train')
+    print(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}') 
     if cfg.wandb and dist.get_rank() == 0:
         import wandb
         wandb.init(
@@ -102,12 +106,14 @@ def train(cfg):
         wandb = None
     # waiting wandb init
     dist.barrier()
-        
+    logger = get_logger()
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}') 
     dataset_train, dataset_val, dataset_test,\
         data_loader_train, data_loader_val , data_loader_test = build_breast_dataloader(cfg.data, load_seg=False)
     data_loader_seg = build_seg_dataloader(build_seg_dataset(cfg.evaluate.seg))
-
-    logger = get_logger()
+    logger.info(f'Finish data loading')  
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')  
+    
 
     logger.info(f'Creating model:{cfg.model.type}/{cfg.model_name}')
     model = build_model(cfg.model)
@@ -143,17 +149,18 @@ def train(cfg):
         max_auroc, max_miou = max_metrics['max_auroc'], max_metrics['max_miou']
         if 'cls' in cfg.evaluate.task:
             acc1, loss, auroc = validate_cls(cfg, data_loader_val, model)
-            logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc}%')
         if 'seg' in cfg.evaluate.task:
             miou = validate_seg(cfg, data_loader_seg, model)
-            logger.info(f'mIoU of the network on the {len(data_loader_val.dataset)} test images: {miou:.2f}%')
         if cfg.evaluate.eval_only:
             return
 
+    logger.info(f'RAM memory % used: {psutil.virtual_memory()[2]}')
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     logger.info('Start training')
     start_time = time.time()
     for epoch in range(cfg.train.start_epoch, cfg.train.epochs):
         loss_train_dict = train_one_epoch(cfg, model, data_loader_train, optimizer, epoch, lr_scheduler)
+        logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
         if dist.get_rank() == 0 and (epoch % cfg.checkpoint.save_freq == 0 or epoch == (cfg.train.epochs - 1)):
             save_checkpoint(cfg, epoch, model_without_ddp, {
                 'max_auroc': max_auroc,
@@ -162,12 +169,13 @@ def train(cfg):
         dist.barrier()
         loss_train = loss_train_dict['total_loss']
         logger.info(f'Avg loss of the network on the {len(dataset_train)} train images: {loss_train:.2f}')
-
-        # evaluate
+        logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
+        #  evaluate
         if (epoch % cfg.evaluate.eval_freq == 0 or epoch == (cfg.train.epochs - 1)):
             if 'cls' in cfg.evaluate.task:
                 acc1, loss, auroc = validate_cls(cfg, data_loader_val, model)
                 logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc}')
+                logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
                 max_metrics['max_auroc'] = max(max_metrics['max_auroc'], auroc.mean())
                 if cfg.evaluate.cls.save_best and dist.get_rank() == 0 and auroc.mean() > max_auroc:
                     save_checkpoint(
@@ -177,7 +185,8 @@ def train(cfg):
                 logger.info(f'Max AUROC: {max_auroc:.2f}%')
             if 'seg' in cfg.evaluate.task:
                 miou = validate_seg(cfg, data_loader_seg, model)
-                logger.info(f'mIoU of the network on the {len(data_loader_val.dataset)} test images: {miou:.2f}%')
+                logger.info(f'mIoU of the network on the {len(data_loader_seg.dataset)} test images: {miou:.2f}%')
+                logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
                 max_metrics['max_miou'] = max(max_metrics['max_miou'], miou)
                 if cfg.evaluate.seg.save_best and dist.get_rank() == 0 and miou > max_miou:
                     save_checkpoint(
@@ -222,7 +231,7 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
     start = time.time()
     end = time.time()
     for idx, samples in enumerate(data_loader):
-
+            
         batch_size = config.data.batch_size
 
         losses = model(**samples)
@@ -269,8 +278,9 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
         torch.cuda.synchronize()
 
         loss_meter.update(loss.item(), batch_size)
+
         for loss_name in log_vars:
-            log_vars_meters[loss_name].update(log_vars[loss_name], batch_size)
+            log_vars_meters[loss_name].update(log_vars[loss_name].item(), batch_size)
         norm_meter.update(grad_norm)
         batch_time.update(time.time() - end)
         end = time.time()
@@ -278,7 +288,8 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
         if idx % config.print_freq == 0:
             lr = optimizer.param_groups[0]['lr']
             memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
-            etas = batch_time.avg * (num_steps - idx)
+            etas = batch_time.avg * (num_steps - idx) 
+            ram = psutil.virtual_memory()[3]/1000000000
             log_vars_str = '\t'.join(f'{n} {m.val:.4f} ({m.avg:.4f})' for n, m in log_vars_meters.items())
             logger.info(f'Train: [{epoch}/{config.train.epochs}][{idx}/{num_steps}]\t'
                         f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t'
@@ -286,7 +297,8 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
                         f'total_loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
                         f'{log_vars_str}\t'
                         f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
-                        f'mem {memory_used:.0f}MB')
+                        f'mem {memory_used:.0f}MB \t'
+                        f'ram {ram:.2f}GB')
             if wandb is not None:
                 log_stat = {f'iter/train_{n}': m.avg for n, m in log_vars_meters.items()}
                 log_stat['iter/train_total_loss'] = loss_meter.avg
@@ -295,6 +307,7 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
 
     epoch_time = time.time() - start
     logger.info(f'EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}')
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     result_dict = dict(total_loss=loss_meter.avg)
     for n, m in log_vars_meters.items():
         result_dict[n] = m.avg
@@ -312,8 +325,10 @@ def validate_cls(config, data_loader, model):
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     acc1_meter = AverageMeter()
-    all_preds = []
-    all_targets = [] 
+    
+    all_preds = []#torch.zeros((len(data_loader.dataset),len(breast_classes)),device=torch.cuda.current_device())
+    all_targets = []#torch.zeros((len(data_loader.dataset),len(breast_classes)),device=torch.cuda.current_device())
+    
     #auc_metric = AUC()
 
     text_transform = build_text_transform(False, config.data.text_aug, with_dc=False)
@@ -323,28 +338,23 @@ def validate_cls(config, data_loader, model):
     text_embedding = data2cuda(
         model.module.build_text_embedding(
             build_dataset_class_tokens(text_transform, config.evaluate.cls.template, breast_classes)))
-    logger.info('Zero shot classifier built')
+    logger.info('Zero shot classifier built, load dataloader size {}'.format(len(data_loader)))
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     for idx, samples in enumerate(data_loader):
         target = samples.pop('target').cuda()
         target = data2cuda(target)
-
         # compute output
         output = model(image = samples['image'], text=text_embedding)
- 
         # measure accuracy and record loss
         loss = criterion(output, target)
-        
         acc1, _ = accuracy(output[:,:1], target[:,:1], topk=(1, 1))
-
         acc1 = reduce_tensor(acc1)
         loss = reduce_tensor(loss)
-
         loss_meter.update(loss.item(), target.size(0))
         acc1_meter.update(acc1.item(), target.size(0))
-        
-        all_preds.append(output)
+        B, _ = output.shape
+        all_preds.append(output.detach())
         all_targets.append(target)
-
         #auc_metric.update(output.permute(1,0), target.permute(1,0))
        
         # measure elapsed time
@@ -352,22 +362,25 @@ def validate_cls(config, data_loader, model):
         end = time.time()
 
         if idx % config.print_freq == 0:
+            ram = psutil.virtual_memory()[3]/1000000000
             memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
             logger.info(f'Test: [{idx}/{len(data_loader)}]\t'
                         f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                         f'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
                         f'Acc@1 {acc1_meter.val:.3f} ({acc1_meter.avg:.3f})\t'
-                        f'Mem {memory_used:.0f}MB')
+                        f'Mem {memory_used:.0f}MB\t'
+                        f'Ram {ram}')
     #aucs = auc_metric.compute()
     #auc_metric.reset()
     gathered_preds = gather_tensors(torch.cat(all_preds))
     gathered_targets = gather_tensors(torch.cat(all_targets))
+
     if dist.get_rank() == 0:
         gathered_preds = torch.cat(gathered_preds).cpu().numpy()
         gathered_targets = torch.cat(gathered_targets).cpu().numpy()
         auroc = roc_auc_score(gathered_targets, gathered_preds)   
     else:
-        auroc = [0,0,0,0]
+        auroc = np.array([0,0,0,0])
     logger.info('Clearing zero shot classifier')
     torch.cuda.empty_cache()
     logger.info(f' * Acc@1 {acc1_meter.avg:.3f}')
@@ -387,8 +400,9 @@ def validate_seg(config, data_loader, model):
         model_without_ddp = model
 
     text_transform = build_text_transform(False, config.data.text_aug, with_dc=False)
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     seg_model = build_seg_inference(model_without_ddp, data_loader.dataset, text_transform, config.evaluate.seg)
-
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     mmddp_model = MMDistributedDataParallel(
         seg_model, device_ids=[torch.cuda.current_device()], broadcast_buffers=False)
     mmddp_model.eval()
@@ -400,7 +414,7 @@ def validate_seg(config, data_loader, model):
         efficient_test=False,
         pre_eval=True,
         format_only=False)
-
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     if dist.get_rank() == 0:
         metric = [data_loader.dataset.evaluate(results, metric='mIoU')]
     else:
@@ -415,9 +429,9 @@ def validate_seg(config, data_loader, model):
 
 
 def main():
+    print(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}') 
     args = parse_args()
     cfg = get_config(args)
-    
     if cfg.train.amp_opt_level != 'O0':
         assert amp is not None, 'amp not installed!'
 
@@ -498,7 +512,7 @@ def main():
 
     # print config
     logger.info(OmegaConf.to_yaml(cfg))
-
+    logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}') 
     train(cfg)
     dist.barrier()
 
