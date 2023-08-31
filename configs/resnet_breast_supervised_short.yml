@@ -1,0 +1,39 @@
+_base_: 'default_breast_test.yml'
+data:
+  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist_short.pkl
+  batch_size: 80
+  pos_to_neg_ratio: null
+  num_positives: null
+  img_aug:
+    img_size: [224, 224]
+model:
+  type: MultiLabelContrastive
+  img_encoder:
+    type: ModifiedResNet
+    layers: [3, 4, 6, 3]
+    output_dim: 256
+    heads: 32
+    input_resolution: [224,224]
+    width: 64
+  text_encoder:
+    type: TextTransformer
+    context_length: 77
+    width: 256
+    layers: 12
+    vocab_size: 49408
+  contrast_temperature: 0.07
+  proj_num_layers: 0
+  output_dim: 256
+  multi_label: ${data.text_aug.multi_label} # multi_label=0 is better for RedCap
+  fully_supervised: true
+evaluate:
+  task:
+    - cls
+checkpoint:
+  auto_resume: false
+  save_freq: 25
+train:
+  epochs: 50
+  base_lr: 5e-3
+model_name: test_fullbatch
+print_freq: 1

@@ -1,9 +1,12 @@
-_base_: 'default_breast.yml'
-
+_base_: 'default_breast_test.yml'
+data: 
+  pos_to_neg_ratio: 0.5
+  num_positives: 200000
 model:
   type: MultiLabelContrastive
   img_encoder:
     type: GroupViT
+    img_size: [736, 480]
     embed_dim: 384
     num_heads: [6, 6, 6]
     depths: [6, 3, 3]
@@ -21,11 +24,14 @@ model:
   proj_num_layers: 2
   output_dim: 256
   multi_label: ${data.text_aug.multi_label} # multi_label=0 is better for RedCap
-  fully_supervised: false
+  fully_supervised: true
 
 evaluate:
   task:
     - cls
 checkpoint:
-  auto_resume: false
-  
+  auto_resume: true
+  save_freq: 5
+train:
+  epochs: 50
+  base_lr: 1e-4

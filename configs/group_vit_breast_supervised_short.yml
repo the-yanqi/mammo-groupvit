@@ -1,4 +1,7 @@
-_base_: 'default_breast.yml'
+_base_: 'default_breast_test.yml'
+data:
+  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist_short.pkl
+  batch_size: 10
 
 model:
   type: MultiLabelContrastive
@@ -21,11 +24,14 @@ model:
   proj_num_layers: 2
   output_dim: 256
   multi_label: ${data.text_aug.multi_label} # multi_label=0 is better for RedCap
-  fully_supervised: false
+  fully_supervised: true
 
 evaluate:
   task:
     - cls
 checkpoint:
-  auto_resume: false
-  
+  auto_resume: true
+  save_freq: 35
+train:
+  epochs: 70
+  base_lr: 1e-2

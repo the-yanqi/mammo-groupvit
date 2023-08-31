@@ -27,6 +27,8 @@ def build_scheduler(config, optimizer, n_iter_per_epoch):
             cycle_limit=1,
             t_in_epochs=False,
         )
+    elif config.lr_scheduler.name == 'none':
+        pass
     else:
         raise NotImplementedError(f'lr scheduler {config.lr_scheduler.name} not implemented')
 

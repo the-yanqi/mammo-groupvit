@@ -37,10 +37,12 @@ from collections import defaultdict
 import numpy as np
 
 import torch
+from torch import nn
+
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from datasets import build_loader, build_text_transform, imagenet_classes, breast_classes, build_breast_dataloader
+from datasets import build_loader, build_text_transform, imagenet_classes, breast_classes, density_classes,build_breast_dataloader
 from mmcv.parallel import MMDistributedDataParallel
 from mmcv.runner import get_dist_info, init_dist, set_random_seed
 from mmcv.utils import collect_env, get_git_hash
@@ -68,6 +70,7 @@ def parse_args():
     parser.add_argument('--slurm', action='store_true', help='Whether environment on slurm')
     # easy config modification
     parser.add_argument('--batch-size', type=int, help='batch size for single GPU')
+    parser.add_argument('--base-lr', type=float, help='base learning rate before scaling')
     parser.add_argument('--resume', help='resume from checkpoint')
     parser.add_argument(
         '--amp-opt-level',
@@ -123,11 +126,15 @@ def train(cfg):
     optimizer = build_optimizer(cfg.train, model)
     if cfg.train.amp_opt_level != 'O0':
         model, optimizer = amp.initialize(model, optimizer, opt_level=cfg.train.amp_opt_level)
-    model = MMDistributedDataParallel(model, device_ids=[torch.cuda.current_device()], broadcast_buffers=False)
+    model = MMDistributedDataParallel(model, device_ids=[torch.cuda.current_device()], broadcast_buffers=False,find_unused_parameters=True)
     model_without_ddp = model.module
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f'number of params: {n_parameters}')
+
+    all_parameters = sum(p.numel() for p in model.parameters())
+    logger.info(f'number of params (including no grads): {all_parameters}')
+
     lr_scheduler = build_scheduler(cfg.train, optimizer, len(data_loader_train))
 
     if cfg.checkpoint.auto_resume:
@@ -174,7 +181,7 @@ def train(cfg):
         if (epoch % cfg.evaluate.eval_freq == 0 or epoch == (cfg.train.epochs - 1)):
             if 'cls' in cfg.evaluate.task:
                 acc1, loss, auroc = validate_cls(cfg, data_loader_val, model)
-                logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc}')
+                logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc.mean()}')
                 logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
                 max_metrics['max_auroc'] = max(max_metrics['max_auroc'], auroc.mean())
                 if cfg.evaluate.cls.save_best and dist.get_rank() == 0 and auroc.mean() > max_auroc:
@@ -222,6 +229,15 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
     else:
         wandb = None
 
+    if config.data.label_type == 'density':
+        multi_class = 'ovo'
+        average = 'macro'
+    else:
+        multi_class = 'raise' 
+        average = None
+    all_preds = []
+    all_targets = []
+
     num_steps = len(data_loader)
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
@@ -231,12 +247,20 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
     start = time.time()
     end = time.time()
     for idx, samples in enumerate(data_loader):
-            
         batch_size = config.data.batch_size
+        
+        if config.model.fully_supervised:
+            losses, output = model(**samples)
+            loss, log_vars = parse_losses(losses)
+            target = samples.pop('text').cuda()
+            target = data2cuda(target).reshape(-1)
 
-        losses = model(**samples)
+            all_preds.append(output.detach())
+            all_targets.append(target) 
+        else:
+            losses = model(**samples)
+            loss, log_vars = parse_losses(losses)
 
-        loss, log_vars = parse_losses(losses)
 
         if config.train.accumulation_steps > 1:
             loss = loss / config.train.accumulation_steps
@@ -256,7 +280,8 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
             if (idx + 1) % config.train.accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
-                lr_scheduler.step_update(epoch * num_steps + idx)
+                if lr_scheduler is not None:
+                    lr_scheduler.step_update(epoch * num_steps + idx)
         else:
             optimizer.zero_grad()
             if config.train.amp_opt_level != 'O0':
@@ -270,10 +295,12 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
                 loss.backward()
                 if config.train.clip_grad:
                     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.clip_grad)
+                    
                 else:
                     grad_norm = get_grad_norm(model.parameters())
             optimizer.step()
-            lr_scheduler.step_update(epoch * num_steps + idx)
+            if lr_scheduler is not None:
+                lr_scheduler.step_update(epoch * num_steps + idx)
 
         torch.cuda.synchronize()
 
@@ -305,6 +332,20 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
                 log_stat['iter/learning_rate'] = lr
                 wandb.log(log_stat)
 
+    if config.model.fully_supervised:
+        gathered_preds = gather_tensors(torch.cat(all_preds))
+        gathered_targets = gather_tensors(torch.cat(all_targets))
+        if dist.get_rank() == 0:
+            gathered_targets = torch.cat(gathered_targets).cpu().numpy()
+            gathered_preds = torch.cat(gathered_preds)
+            if config.data.label_type == 'density':
+                gathered_preds = torch.softmax(gathered_preds,dim=-1)
+            gathered_preds = gathered_preds.cpu().numpy()
+            auroc = roc_auc_score(gathered_targets, gathered_preds, average=average, multi_class=multi_class)   
+        else:
+            auroc = np.array([0])
+        logger.info(f' * Training AUROC {auroc}')
+
     epoch_time = time.time() - start
     logger.info(f'EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}')
     logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
@@ -319,17 +360,24 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
 def validate_cls(config, data_loader, model):
     logger = get_logger()
     dist.barrier()
-    criterion = torch.nn.BCEWithLogitsLoss()#torch.nn.CrossEntropyLoss()
+    if config.data.label_type == 'density':
+        criterion = torch.nn.CrossEntropyLoss()
+        label_classes = density_classes
+        multi_class = 'ovo'
+        average = 'macro'
+    else:
+        criterion = torch.nn.BCEWithLogitsLoss()
+        label_classes = breast_classes
+        multi_class = 'raise' 
+        average = None
     model.eval()
 
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     acc1_meter = AverageMeter()
     
-    all_preds = []#torch.zeros((len(data_loader.dataset),len(breast_classes)),device=torch.cuda.current_device())
-    all_targets = []#torch.zeros((len(data_loader.dataset),len(breast_classes)),device=torch.cuda.current_device())
-    
-    #auc_metric = AUC()
+    all_preds = []
+    all_targets = []
 
     text_transform = build_text_transform(False, config.data.text_aug, with_dc=False)
 
@@ -337,7 +385,7 @@ def validate_cls(config, data_loader, model):
     logger.info('Building zero shot classifier')
     text_embedding = data2cuda(
         model.module.build_text_embedding(
-            build_dataset_class_tokens(text_transform, config.evaluate.cls.template, breast_classes)))
+            build_dataset_class_tokens(text_transform, config.evaluate.cls.template, label_classes)))
     logger.info('Zero shot classifier built, load dataloader size {}'.format(len(data_loader)))
     logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     for idx, samples in enumerate(data_loader):
@@ -346,16 +394,20 @@ def validate_cls(config, data_loader, model):
         # compute output
         output = model(image = samples['image'], text=text_embedding)
         # measure accuracy and record loss
+        if config.data.label_type == 'density':
+            target = target.reshape(-1)
+            acc1, _ = accuracy(output, target, topk=(1, 4))
+        else:
+            acc1, _ = accuracy(output[:,:1], target[:,:1], topk=(1, 1))
+
         loss = criterion(output, target)
-        acc1, _ = accuracy(output[:,:1], target[:,:1], topk=(1, 1))
-        acc1 = reduce_tensor(acc1)
         loss = reduce_tensor(loss)
         loss_meter.update(loss.item(), target.size(0))
+        acc1 = reduce_tensor(acc1)
         acc1_meter.update(acc1.item(), target.size(0))
-        B, _ = output.shape
+     
         all_preds.append(output.detach())
         all_targets.append(target)
-        #auc_metric.update(output.permute(1,0), target.permute(1,0))
        
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -376,9 +428,12 @@ def validate_cls(config, data_loader, model):
     gathered_targets = gather_tensors(torch.cat(all_targets))
 
     if dist.get_rank() == 0:
-        gathered_preds = torch.cat(gathered_preds).cpu().numpy()
         gathered_targets = torch.cat(gathered_targets).cpu().numpy()
-        auroc = roc_auc_score(gathered_targets, gathered_preds)   
+        gathered_preds = torch.cat(gathered_preds)
+        if config.data.label_type == 'density':
+            gathered_preds = torch.softmax(gathered_preds,dim=-1)
+        gathered_preds = gathered_preds.cpu().numpy()
+        auroc = roc_auc_score(gathered_targets, gathered_preds, average=average, multi_class=multi_class)   
     else:
         auroc = np.array([0,0,0,0])
     logger.info('Clearing zero shot classifier')
@@ -479,7 +534,7 @@ def main():
     logger = get_logger(cfg)
 
     # linear scale the learning rate according to total batch size, may not be optimal
-    linear_scaled_lr = cfg.train.base_lr * cfg.data.batch_size * world_size / 4096.0
+    linear_scaled_lr = cfg.train.base_lr #* cfg.data.batch_size * world_size / 4096.0
     linear_scaled_warmup_lr = cfg.train.warmup_lr * cfg.data.batch_size * world_size / 4096.0
     linear_scaled_min_lr = cfg.train.min_lr * cfg.data.batch_size * world_size / 4096.0
 

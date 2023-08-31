@@ -1,0 +1,39 @@
+_base_: 'default_breast_test.yml'
+data: 
+  pos_to_neg_ratio: 1
+  num_positives: 50000
+  img_aug:
+    deit_aug: false
+    img_size: [1472, 960]
+model:
+  type: MultiLabelContrastive
+  img_encoder:
+    type: VisionTransformer
+    input_resolution: ${data.img_aug.img_size} 
+    patch_size: 32
+    width: 768
+    layers: 12
+    heads: 12
+    output_dim: 512
+  text_encoder:
+    type: TextTransformer
+    context_length: 77
+    width: 256
+    layers: 12
+    vocab_size: 49408
+  contrast_temperature: 0.07
+  proj_num_layers: 0
+  output_dim: 512
+  multi_label: ${data.text_aug.multi_label} # multi_label=0 is better for RedCap
+  fully_supervised: true
+
+evaluate:
+  task:
+    - cls
+checkpoint:
+  auto_resume: false
+  save_freq: 5
+  resume: '/gpfs/data/geraslab/Yanqi/image-to-text/pretrained_weights/ViT-B-32.pt'
+train:
+  epochs: 50
+  base_lr: 1e-4

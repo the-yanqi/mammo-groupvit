@@ -13,7 +13,7 @@ data:
   seed: ${train.seed}
 
   img_aug:
-    deit_aug: true
+    deit_aug: false
     img_size: [736, 480]
     img_scale: [0.08, 1.0]
     interpolation: bilinear
@@ -34,15 +34,15 @@ train:
   warmup_epochs: 2
   base_lr: 1.6e-3
   weight_decay: 0.05
-  warmup_lr: 1e-6
-  min_lr: 1e-7
+  warmup_lr: 4e-6
+  min_lr: 4e-5
   clip_grad: 5.0
   accumulation_steps: 0
   amp_opt_level: O1
   seed: 0
 
   lr_scheduler:
-    name: cosine
+    name: none
 
   optimizer:
     name: adamw
@@ -68,7 +68,7 @@ checkpoint:
   resume: ''
   freq: 1
   max_kept: -1
-  save_freq: 5
+  save_freq: 1
 
 
 model_name: '' # display name in the logger

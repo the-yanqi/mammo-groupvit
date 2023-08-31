@@ -31,8 +31,12 @@ def get_config(args):
 
     if args.opts is not None:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(args.opts))
+        
     if hasattr(args, 'batch_size') and args.batch_size:
         cfg.data.batch_size = args.batch_size
+
+    if hasattr(args, 'base_lr') and args.base_lr:
+        cfg.train.base_lr = args.base_lr
 
     if hasattr(args, 'slurm') and args.slurm:
         cfg.train.slurm = args.slurm
@@ -51,8 +55,10 @@ def get_config(args):
 
     if not cfg.model_name:
         cfg.model_name = osp.splitext(osp.basename(args.cfg))[0]
-
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    if cfg.train.slurm:
+        world_size = int(os.environ.get('SLURM_NTASKS', 1)) 
+    else:
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
     cfg.model_name = cfg.model_name + f'_bs{cfg.data.batch_size}x{world_size}'
 
     if hasattr(args, 'output') and args.output:

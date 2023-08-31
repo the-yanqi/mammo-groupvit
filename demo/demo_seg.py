@@ -23,7 +23,7 @@ from mmcv.image import tensor2imgs
 from mmcv.parallel import collate, scatter
 from models import build_model
 from omegaconf import read_write
-from segmentation.datasets import COCOObjectDataset, PascalContextDataset, PascalVOCDataset
+from segmentation.datasets import COCOObjectDataset, PascalContextDataset, PascalVOCDataset, BreastCancerDataset
 from segmentation.evaluation import build_seg_demo_pipeline, build_seg_inference
 from utils import get_config, load_checkpoint
 
@@ -81,6 +81,9 @@ def inference(args, cfg):
     elif args.dataset == 'context':
         dataset_class = PascalContextDataset
         seg_cfg = 'segmentation/configs/_base_/datasets/pascal_context.py'
+    elif args.dataset == 'breast':
+        dataset_class = BreastCancerDataset
+        seg_cfg = 'segmentation/configs/_base_/datasets/breast_cancer.py'
     else:
         raise ValueError('Unknown dataset: {}'.format(args.dataset))
 

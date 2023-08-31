@@ -19,6 +19,7 @@ from timm.loss import SoftTargetCrossEntropy
 
 from .builder import MODELS
 from .misc import Result
+from torchvision.models import resnet50
 
 
 def dist_collect(x):
@@ -76,6 +77,7 @@ class ProjectMLP(nn.Module):
         return x
 
 
+
 @MODELS.register_module()
 class MultiLabelContrastive(nn.Module):
 
@@ -87,16 +89,36 @@ class MultiLabelContrastive(nn.Module):
                  proj_num_layers=2,
                  multi_label=0,
                  share_temperature=False,
-                 multi_label_loss_weight=1.0):
+                 multi_label_loss_weight=1.0,
+                 fully_supervised=False,
+                 label_type='abnormality',
+                 img_encoder_checkpoint=None):
         super().__init__()
-
-        self.img_encoder = MODELS.build(img_encoder)
+        if img_encoder == 'resnet-torchvision':
+            self.img_encoder = resnet50(pretrained=True)
+            in_feats = self.img_encoder.fc.in_features
+            self.img_encoder.fc = torch.nn.Linear(in_feats,1)
+        else:
+            self.img_encoder = MODELS.build(img_encoder)
+            if img_encoder_checkpoint is not None:
+                self.img_encoder.load_state_dict(torch.load(img_encoder_checkpoint),strict=False)
         self.text_encoder = MODELS.build(text_encoder)
 
         self.contrast_temperature = contrast_temperature
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / contrast_temperature))
         self.cross_entropy = nn.CrossEntropyLoss()
         self.soft_cross_entropy = SoftTargetCrossEntropy()
+        self.label_type = label_type
+        self.fully_supervised = fully_supervised
+        if self.fully_supervised:
+            if label_type == 'abnormality':
+                self.cross_entropy = torch.nn.BCEWithLogitsLoss()
+            else:
+                self.cross_entropy = torch.nn.CrossEntropyLoss()
+            if img_encoder != 'resnet-torchvision':
+                self.projector = ProjectMLP(in_dim=output_dim, num_layers=2, out_dim=1)
+            else:
+                self.projector = nn.Identity()
 
         self.proj_num_layers = proj_num_layers
         self.multi_label = multi_label
@@ -107,7 +129,6 @@ class MultiLabelContrastive(nn.Module):
                 in_dim=self.text_encoder.width, num_layers=proj_num_layers, out_dim=output_dim)
             self.img_projector = nn.SyncBatchNorm.convert_sync_batchnorm(self.img_projector)
             self.text_projector = nn.SyncBatchNorm.convert_sync_batchnorm(self.text_projector)
-
         else:
             self.img_projector = nn.Identity()
             self.text_projector = nn.Identity()
@@ -130,14 +151,19 @@ class MultiLabelContrastive(nn.Module):
         # [B, C]
         image_x = F.normalize(image_x, dim=-1)
         text_x = F.normalize(text_x, dim=-1)
-
+        #print(image_x.shape, text_x.shape)
         logits_per_img = image_x @ dist_collect(text_x).t()
         logits_per_text = text_x @ dist_collect(image_x).t()
 
         logit_scale = torch.clamp(self.logit_scale.exp(), max=100)
+        
+        #print((logits_per_text * logit_scale).max(dim=-1)[-1])
+        #print((logits_per_img * logit_scale).max(dim=-1)[-1])
+        #print(labels)
+        #print(logit_scale)
         loss_img = self.cross_entropy(logits_per_img * logit_scale, labels)
         loss_text = self.cross_entropy(logits_per_text * logit_scale, labels)
-
+        #print(loss_img, loss_text)
         loss = 0.5 * (loss_img + loss_text)
 
         return loss
@@ -203,7 +229,8 @@ class MultiLabelContrastive(nn.Module):
         loss_text = self.soft_cross_entropy(logits_per_text * logit_scale, labels_per_text)
 
         loss = 0.5 * (loss_img + loss_text)
-
+        #print(logits_per_img * logit_scale)
+        #print(labels_per_img)
         return loss
 
     def encode_image(self, image, *, return_feat=False, as_dict=False):
@@ -235,7 +262,7 @@ class MultiLabelContrastive(nn.Module):
             outs.update(text_x=text_x, text_multi_label_x=text_multi_label_x)
 
         return outs.as_return()
-
+ 
     def forward_train(self, image, text):
         image_outs = self.encode_image(image, as_dict=True)
         # [B, C]
@@ -259,11 +286,39 @@ class MultiLabelContrastive(nn.Module):
     def forward_test(self, image, text):
         return self.zero_shot_pred(image, text)
 
+    def forward_train_supervised(self, image, text):
+        image_x = self.img_encoder(image)
+        logits_per_img = self.projector(image_x) 
+        # [B, C]
+
+        logit_scale = torch.clamp(self.logit_scale.exp(), max=100)
+        
+        if self.label_type == 'density':
+            text = text.reshape(-1)
+        loss_img = self.cross_entropy(logits_per_img * logit_scale, text)
+
+        losses = loss_img
+        losses_dict = dict(loss=losses)
+        return losses_dict, logits_per_img 
+
+    def forward_test_supervised(self, image, text):
+        image_features = self.projector(self.img_encoder(image))
+        #print(image_features)
+        logits_per_img = image_features + text.sum() * 0
+        #print(logits_per_img)
+        return logits_per_img
+
     def forward(self, image, text):
-        if self.training:
-            return self.forward_train(image, text)
-        else:
-            return self.forward_test(image, text)
+        if self.fully_supervised:
+            if self.training:
+                return self.forward_train_supervised(image, text)
+            else:
+                return self.forward_test_supervised(image, text)
+        else: 
+            if self.training:
+                return self.forward_train(image, text)
+            else:
+                return self.forward_test(image, text)
 
     @torch.no_grad()
     def build_text_embedding(self, text):
@@ -290,7 +345,7 @@ class MultiLabelContrastive(nn.Module):
     @torch.no_grad()
     def zero_shot_pred(self, image, text):
         # [B, C]
-        print('inside',image.is_cuda)
+     
         image_features = self.encode_image(image)
         image_features = F.normalize(image_features, dim=-1)
 

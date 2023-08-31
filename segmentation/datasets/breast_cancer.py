@@ -14,7 +14,9 @@ from mmcv.utils import print_log
 from mmseg.datasets.builder import PIPELINES
 from mmseg.utils import get_root_logger
 import torchvision.transforms.functional as F
+from torchvision import transforms
 from breast_datasets import load_mammogram_img, load_segmentation_mammogram
+from torchvision.transforms.functional import InterpolationMode
 import os 
 
 @DATASETS.register_module()
@@ -24,7 +26,7 @@ class BreastCancerDataset(CustomDataset):
     1 bg class + first 80 classes from the COCO-Stuff dataset.
     """
 
-    CLASSES = ('background', 'benign', 'malignant')
+    CLASSES = ('background', 'mass', 'malignant')
 
     PALETTE = [[0, 0, 0], [0, 192, 64], [0, 192, 64]]
 
@@ -241,9 +243,10 @@ class NormalizeTensor(object):
     """
 
     def __init__(self, mean, std, to_rgb=True):
-        self.mean = np.array(mean, dtype=np.float32)
-        self.std = np.array(std, dtype=np.float32)
         self.to_rgb = to_rgb
+        self.normalize_func = transforms.Normalize(mean, std, False)
+        self.mean = mean
+        self.std = std
 
     def __call__(self, results):
         """Call function to normalize images.
@@ -256,7 +259,8 @@ class NormalizeTensor(object):
                 result dict.
         """
         results['img'] = results['img'].repeat([3, 1, 1])
-        results['img'] = F.normalize(results['img'], self.mean, self.std)            
+        results['img'] = self.normalize_func(results['img'])            
+        
 
         results['img_norm_cfg'] = dict(
             mean=self.mean, std=self.std, to_rgb=self.to_rgb)
@@ -267,3 +271,12 @@ class NormalizeTensor(object):
         repr_str += f'(mean={self.mean}, std={self.std}, to_rgb=' \
                     f'{self.to_rgb})'
         return repr_str
+
+@PIPELINES.register_module()
+class CenterCrop:
+    def __init__(self, size, interpolation=InterpolationMode.BILINEAR):
+        self.crop_func = transforms.CenterCrop(size)
+
+    def __call__(self, sample):
+        sample['img'] = self.crop_func(sample['img'])    
+        return sample

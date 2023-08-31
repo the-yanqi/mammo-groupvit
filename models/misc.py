@@ -56,9 +56,8 @@ class Result:
 
 def interpolate_pos_encoding(pos_embed, H, W):
     num_patches = H * W
-
     N = pos_embed.shape[1]
-    if num_patches == N and W == H:
+    if num_patches == N:
         return pos_embed
     patch_pos_embed = pos_embed
     dim = pos_embed.shape[-1]

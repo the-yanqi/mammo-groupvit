@@ -10,10 +10,10 @@
 
 
 from .builder import build_loader, build_text_transform
-from .imagenet_template import imagenet_classes, template_meta, breast_classes
+from .imagenet_template import imagenet_classes, template_meta, breast_classes, density_classes
 from .breast_builder import build_breast_dataloader
 
 __all__ = [
-    'build_loader', 'build_text_transform', 'template_meta', 'imagenet_classes', 'breast_classes', 
+    'build_loader', 'build_text_transform', 'template_meta', 'imagenet_classes', 'breast_classes','density_classes' 
     
 ]

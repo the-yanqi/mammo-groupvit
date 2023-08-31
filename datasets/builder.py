@@ -222,8 +222,8 @@ class Normalize:
             transformed_sample = dict()
             
             image = self.normalize_func(sample['image'])
-            bseg =  self.normalize_func(sample['bseg'])
-            mseg =  self.normalize_func(sample['mseg']) 
+            bseg =  sample['bseg']
+            mseg =  sample['mseg']
             bseg = (bseg > 0).float()
             mseg = (mseg > 0).float()
             segs = torch.cat([bseg, mseg], dim=0)
@@ -237,25 +237,39 @@ class Standardizer(object):
     def __init__(self):
         pass
 
-    def __call__(self, image):
-        image = (image - image.mean()) / np.maximum(image.std(), 10 ** (-5))
-        return image
+    def __call__(self, sample):
+        if isinstance(sample, dict):
+            transformed_sample = dict()
+            image = (sample['image'] - sample['image'].mean()) / torch.max(sample['image'].std(), torch.tensor(10 ** (-5)))
+            
+            bseg =  sample['bseg']
+            mseg =  sample['mseg']
+            bseg = (bseg > 0).float()
+            mseg = (mseg > 0).float()
+            segs = torch.cat([bseg, mseg], dim=0)
+            transformed_sample = {'image':image, 'seg': segs} 
+        else:
+            transformed_sample = (sample - sample.mean()) / torch.max(sample.std(), torch.tensor(10 ** (-5)))
+        return transformed_sample
     
 def build_breast_transform(is_train, config, with_dc=True):
     if not config.deit_aug:
         if is_train:
             transform = transforms.Compose([
-                transforms.RandomResizedCrop(config.img_size, scale=config.img_scale),
-                transforms.RandomHorizontalFlip(),
+                CopyChannel(),
+                Resize(config.img_size),
+                #transforms.RandomResizedCrop(config.img_size, scale=config.img_scale),
+                #transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
+                Standardizer()
             ])
         else:
             transform = transforms.Compose([
-                Resize(config.img_size + 32),
-                CenterCrop(config.img_size),
+                CopyChannel(),
+                Resize(config.img_size),
+                #CenterCrop(config.img_size),
                 ToTensor(),
-                Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
+                Standardizer()
             ])
 
         return transform
@@ -263,27 +277,29 @@ def build_breast_transform(is_train, config, with_dc=True):
     if is_train:
         # this should always dispatch to transforms_imagenet_train
         transform = create_transform(
-            input_size=config.img_size,
+            input_size=list(config.img_size),
             is_training=True,
             color_jitter=config.color_jitter if config.color_jitter > 0 else None,
             auto_augment=config.auto_augment if config.auto_augment != 'none' else None,
             re_prob=config.re_prob,
             re_mode=config.re_mode,
             re_count=config.re_count,
+            mean=(0.,0.,0.),
+            std=(1.,1.,1.),
             interpolation=config.interpolation,
         )
     else:
-        size = int((256 / 224) * config.img_size)
+        size = ((256 / 224) * np.array(config.img_size)).astype('int').tolist()#int((256 / 224) * config.img_size)
         transform = transforms.Compose([
             Resize(size, interpolation= _pil_interp(config.interpolation)),#InterpolationMode.BILINEAR),
             CenterCrop(config.img_size),
-            ToTensor(),
-            Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
+            ToTensor()
         ])
 
     if with_dc:
         transform = transforms.Compose([CopyChannel(),
                                         *transform.transforms, 
+                                        Standardizer(),
                                         ToDataContainer()])
     return transform
 
@@ -293,8 +309,8 @@ def build_img_transform(is_train, config, with_dc=True):
     if not config.deit_aug:
         if is_train:
             transform = transforms.Compose([
-                transforms.RandomResizedCrop(config.img_size, scale=config.img_scale),
-                transforms.RandomHorizontalFlip(),
+                #transforms.RandomResizedCrop(config.img_size, scale=config.img_scale),
+                #transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
             ])

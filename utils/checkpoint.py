@@ -47,13 +47,47 @@ def load_checkpoint(config, model, optimizer, lr_scheduler):
     logger = get_logger()
     logger.info(f'==============> Resuming form {config.checkpoint.resume}....................')
     checkpoint = CheckpointLoader.load_checkpoint(config.checkpoint.resume, map_location='cpu')
-    msg = model.load_state_dict(checkpoint['model'], strict=False)
+    state_dict = checkpoint['model']
+
+    #bicubic interpolate positional_embedding if not match
+    pos_embed_keys = [k for k in state_dict.keys() if "positional_embedding" in k]
+    for k in pos_embed_keys:
+        # dpe
+        pos_embed_pretrained = state_dict[k]
+        pos_embed_current = model.state_dict()[k]
+      
+        patch_size = config.model.img_encoder.patch_size 
+        input_resolution = config.model.img_encoder.input_resolution
+        L1, C1 = pos_embed_pretrained.size()
+        L2, C2 = pos_embed_current.size()
+ 
+        if C1 != C1:
+            print(f"Error in loading {k}, passing......")
+        else:
+            if L1 != L2:
+                cls_embed_pretrained = pos_embed_pretrained[0, :]
+                pos_embed_pretrained = pos_embed_pretrained[1:, :]
+
+                S1 = int((L1-1) ** 0.5)
+                S2 = ((input_resolution[0] // patch_size), (input_resolution[1] // patch_size))
+                pos_embed_pretrained = pos_embed_pretrained.reshape(1, S1, S1, C1)
+                pos_embed_pretrained = pos_embed_pretrained.permute(0, 3, 1, 2)
+                pos_embed_pretrained_resized = torch.nn.functional.interpolate(
+                    pos_embed_pretrained, size=S2, mode='bicubic')
+                pos_embed_pretrained_resized = pos_embed_pretrained_resized.permute(0, 2, 3, 1)
+                pos_embed_pretrained_resized = pos_embed_pretrained_resized.view(-1, C1)
+                state_dict[k] = torch.cat((cls_embed_pretrained.unsqueeze(0), pos_embed_pretrained_resized), dim=0)
+
+    msg = model.load_state_dict(state_dict, strict=False)
     logger.info(msg)
     metrics = defaultdict(float)
     if (not config.evaluate.eval_only and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint
             and 'epoch' in checkpoint):
         optimizer.load_state_dict(checkpoint['optimizer'])
-        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        if checkpoint['lr_scheduler'] is not None:
+            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        else:
+            lr_scheduler = None 
         with read_write(config):
             config.train.start_epoch = checkpoint['epoch'] + 1
         if 'amp' in checkpoint and config.train.amp_opt_level != 'O0' and checkpoint[
@@ -71,7 +105,7 @@ def save_checkpoint(config, epoch, model, metrics, optimizer, lr_scheduler, suff
     save_state = {
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
-        'lr_scheduler': lr_scheduler.state_dict(),
+        'lr_scheduler': lr_scheduler.state_dict() if lr_scheduler is not None else None,
         'metrics': metrics,
         'epoch': epoch,
         'config': config
@@ -86,7 +120,9 @@ def save_checkpoint(config, epoch, model, metrics, optimizer, lr_scheduler, suff
 
     if len(suffix) > 0 and not suffix.startswith('_'):
         suffix = '_' + suffix
-    filename = f'ckpt_epoch_{epoch}{suffix}.pth'
+        filename = f'ckpt{suffix}.pth'
+    else:
+        filename = f'ckpt_epoch_{epoch}.pth'
 
     save_path = os.path.join(config.output, filename)
     logger.info(f'{save_path} saving......')

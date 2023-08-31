@@ -9,7 +9,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from breast_datasets import ImageTextDataset, BreastDataset
+from breast_datasets import ImageTextDataset, BreastDataset, UpsampleLoader
 from datasets.builder import build_text_transform, build_breast_transform
 
 def worker_init_fn(worker_id, num_workers, rank, seed):
@@ -59,12 +59,15 @@ def get_breast_dataset(datalist_dir,
                                           imaging_modality=imaging_modality,
                                           image_transformations=training_transformations,
                                           text_transformations=training_text_transformations, 
+                                          pos_to_neg_ratio=config.pos_to_neg_ratio, 
+                                          num_positives=config.num_positives,
                                           is_train=True,
-                                          load_seg=False)
+                                          load_seg=False,
+                                          label_type=config.label_type)
         val_ds = ImageTextDataset(meta_datalist['val'], datalist_prefix, img_dir, segmentation_dir, imaging_modality, val_transformations,  
-                                        val_text_transformations,is_train=False,load_seg=load_seg)
+                                        val_text_transformations,is_train=False,load_seg=load_seg,label_type=config.label_type)
         ts_ds = ImageTextDataset(meta_datalist['test'], datalist_prefix, img_dir, segmentation_dir, imaging_modality, ts_transformations, 
-                                        val_text_transformations,is_train=False,load_seg=load_seg)
+                                        val_text_transformations,is_train=False,load_seg=load_seg, label_type=config.label_type)
     elif data_mode == 'breast':
         train_dl = BreastDataset.group_dl_for_breast(meta_datalist['train'])
         val_dl = BreastDataset.group_dl_for_breast(meta_datalist['val'])
@@ -103,16 +106,29 @@ def build_breast_dataloader(config, data_mode="image" ,imaging_modality="mammo",
     dc_collate = partial(collate, samples_per_gpu=config.batch_size)
    
     init_fn = partial(worker_init_fn, num_workers=config.num_workers, rank=rank, seed=config.seed)
-    data_loader_train = DataLoader(
-        dataset_train,
-        collate_fn=dc_collate,
-        batch_size=config.batch_size,
-        sampler=sampler_train,
-        shuffle=False,
-        num_workers=config.num_workers,
-        pin_memory=config.pin_memory,
-        persistent_workers=config.num_workers > 0,
-        worker_init_fn=init_fn)
+    if config.pos_to_neg_ratio is None:
+        data_loader_train = DataLoader(
+            dataset_train,
+            collate_fn=dc_collate,
+            batch_size=config.batch_size,
+            sampler=sampler_train,
+            shuffle=False,
+            num_workers=config.num_workers,
+            pin_memory=config.pin_memory,
+            persistent_workers=config.num_workers > 0,
+            worker_init_fn=init_fn)
+    else:
+        data_loader_train = UpsampleLoader(
+            dataset_train,
+            collate_fn=dc_collate,
+            num_workers=config.num_workers,
+            batch_size=config.batch_size,
+            sampler=sampler_train,
+            shuffle=False,
+            pin_memory=config.pin_memory,
+            persistent_workers=config.num_workers > 0,
+            worker_init_fn=init_fn,
+            upsample_shuffle=True) 
 
     data_loader_val = DataLoader(
         dataset_val,

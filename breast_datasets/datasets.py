@@ -182,14 +182,15 @@ def resolve_cancer_label(datum, cancer_label_col="image_cancer_label_mml"):
 
 def resolve_label(data_pac, label, breast_classes):
     if label == 'abnormality':
-        text = data_pac['observation'].lower()
+        text = data_pac['observation_reduced'].lower()
         label_list = []
         for i, bclass in enumerate(breast_classes):
-            if bclass in text:
-                label_list.append(1)
-            else:
-                label_list.append(0) 
+            label_list.append((bclass in text))
+           
         tensor_label = torch.Tensor(label_list)
+    elif label == 'density':
+        density_dict = {'extremely dense':0,'fibroglandular':1,'heterogeneous':2,'fatty':3}
+        tensor_label = torch.Tensor([density_dict[data_pac['density']]]).long()
 
     elif label == 'cancer':
         tensor_label = resolve_cancer_label(data_pac)
@@ -258,7 +259,7 @@ def load_single_image(data_pac, img_dir, seg_dir, transformations, index,
 
 def load_single_image_text(data_pac,img_dir,seg_dir,image_transformations,text_transformations, 
                             load_img_func, load_segmentation_func, index, 
-                            is_train=True, load_seg=False, cls_classes=['cancer']):
+                            is_train=True, load_seg=False, cls_classes=['cancer'],label_type = 'abnormality'):
     
     img_pil = load_img_func(data_pac, img_dir)
     
@@ -274,11 +275,22 @@ def load_single_image_text(data_pac,img_dir,seg_dir,image_transformations,text_t
         results = {'image': img}
 
     if is_train:
-        text = text_transformations(data_pac['observation'])
-        results['text'] = text
+        
+        label = resolve_label(data_pac, label_type, cls_classes)
+        breast_classes = {0:'mass',1:'calcification',2:'architectural distortion', 3:'asymmetry'}
+        ab_list = [breast_classes[i]  for i,c in enumerate(label) if c == 1]
+        text = ",".join(ab_list) 
+
+        #text = text_transformations(text)
+        results['text'] = label[:1]
+        # label = resolve_label(data_pac,'abnormality', cls_classes)
+        # results['target'] = label
+        # results['raw_text'] = data_pac['observation']
     else:
-        label = resolve_label(data_pac,'abnormality', cls_classes)
-        results['target'] = label
+        label = resolve_label(data_pac, label_type, cls_classes)
+        results['target'] = label[:1]
+
+        #results['text'] = data_pac['density']
     return results
 
 def collect_annotations(bseg, mseg):
@@ -510,11 +522,28 @@ class BreastDataset(Dataset):
     def __len__(self):
         return len(self.data_list)
 
+def check_positive_abnormality(x):
+    if np.array(x['ab_label'][0]).sum() == 0:
+        return False
+    else:
+        return True
+
+def check_positive_random(x):
+    random_n = np.random.rand()
+    if random_n < 0.5:
+        return False
+    else:
+        return True
+
 class ImageTextDataset(Dataset):
     def __init__(self, data_list, datalist_prefix, img_dir, seg_dir, imaging_modality, image_transformations, text_transformations,
-                 check_positive_func=img_dl_pos_func, pos_to_neg_ratio=None, num_positives = None, is_train=True, load_seg = False):
-
-        self.cls_classes = ['mass','calcification','architectural distortion', 'asymmetr'] 
+                 check_positive_func=check_positive_abnormality, pos_to_neg_ratio=None, num_positives = None, is_train=True, load_seg = False, 
+                 label_type = 'abnormality'):
+        self.label_type = label_type
+        if self.label_type == 'abnormality':
+            self.cls_classes = ['mass','calcification','architectural distortion', 'asymmetr'] 
+        elif self.label_type == 'density':
+            self.cls_classes = ['extremely dense','fibroglandular','heterogeneous','fatty']
         # purge datalist:
         self.pos_to_neg_ratio = pos_to_neg_ratio
         self.check_positive_func = check_positive_func
@@ -525,12 +554,11 @@ class ImageTextDataset(Dataset):
         self.load_seg = load_seg
 
         # Need to modify for new datalist
-        # self.positive_cases = [x for x in self.data_list if self.check_positive_func(x)]
-        # self.negative_cases = [x for x in self.data_list if not self.check_positive_func(x)]
-        # # Resample if requested
-        
-        # if self.pos_to_neg_ratio is not None:
-        #     self.resample()
+        self.positive_cases = [x for x in self.data_list if self.check_positive_func(x)]
+        self.negative_cases = [x for x in self.data_list if not self.check_positive_func(x)]
+        # Resample if requested
+        if self.pos_to_neg_ratio is not None:
+            self.resample()
             
         self.img_dir = img_dir
         self.seg_dir = seg_dir
@@ -556,24 +584,27 @@ class ImageTextDataset(Dataset):
         
         if self.num_positives is not None: 
             num_pos_cases = np.minimum(self.num_positives, len(self.positive_cases))
-            random_idx = np.random.permutation(range(len(self.positive_cases)))[:num_pos_cases]
-            self.positive_cases = [self.positive_cases[idx] for idx in random_idx] 
- 
-        neg_need_num = np.minimum(int(round(len(self.positive_cases) * pos_to_neg_ratio)), len(self.negative_cases))
-        random_idx = np.random.permutation(range(len(self.negative_cases)))[:neg_need_num]
-        need_negative_cases = [self.negative_cases[idx] for idx in random_idx]
-        self.data_list = self.positive_cases + need_negative_cases
-        print(
-        "After upsampling: {} positive exams {} negative exams".format(len(self.positive_cases), len(need_negative_cases)))
+            pos_random_idx = np.random.permutation(range(len(self.positive_cases)))[:num_pos_cases]
+            need_positive_cases = [self.positive_cases[idx] for idx in pos_random_idx]
+        else:
+            need_positive_cases = self.positive_cases 
+
+        neg_need_num = np.minimum(int(round(len(need_positive_cases) * pos_to_neg_ratio)), len(self.negative_cases))
+        neg_random_idx = np.random.permutation(range(len(self.negative_cases)))[:neg_need_num]
+        need_negative_cases = [self.negative_cases[idx] for idx in neg_random_idx]
+        self.data_list = need_positive_cases + need_negative_cases
+        print('pos',pos_random_idx[:5])
+        print('neg',neg_random_idx[:5])
+        print("After upsampling: {} positive exams {} negative exams".format(len(need_positive_cases), len(need_negative_cases)))
         # Reshuffle datalist.
         np.random.shuffle(self.data_list)
 
    
     def __getitem__(self, index):
         meta_data_pac = self.data_list[index]
-        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl_file']), "rb") as f:
+        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl']), "rb") as f:
             data = pickle.load(f)
-        data_pac = data[meta_data_pac['file_idx']]
+        data_pac = data[meta_data_pac['idx']]
         
         return load_single_image_text(data_pac=data_pac, img_dir=self.img_dir, seg_dir = self.seg_dir,
                                  image_transformations=self.image_transformations,
@@ -583,7 +614,8 @@ class ImageTextDataset(Dataset):
                                  index=index,
                                  is_train=self.is_train,
                                  load_seg=self.load_seg,
-                                 cls_classes=self.cls_classes)
+                                 cls_classes=self.cls_classes,
+                                 label_type=self.label_type)
 
     def __len__(self):
         return len(self.data_list)
@@ -593,8 +625,9 @@ class UpsampleLoader:
     """
     A wrapper of dataset and dataloader which resamples data list for every epoch
     """
-    def __init__(self, dataset, num_workers, collate_fn, batch_size=None, shuffle=False,
-                 max_numel_per_batch=None, numel_col=None):
+    def __init__(self, dataset, collate_fn, num_workers,  batch_size=None, sampler=None, shuffle=False, 
+                pin_memory=False,  persistent_workers=None, worker_init_fn=None,
+                max_numel_per_batch=None, numel_col=None, upsample_shuffle=True):
         self.dataset = dataset
         self.shuffle = shuffle
         self.num_workers = num_workers
@@ -602,10 +635,17 @@ class UpsampleLoader:
         self.batch_size = batch_size
         self.max_numel_per_batch = max_numel_per_batch
         self.numel_col = numel_col
+        self.sampler = sampler
+        self.pin_memory = pin_memory
+        self.persistent_workers = persistent_workers
+        self.worker_init_fn = worker_init_fn
+        self.upsample_shuffle = upsample_shuffle
+        
         self.resample()
 
     def resample(self):
         self.dataset.resample()
+        print('resample in dataloader')
         # create new data loader
         # TODO: check if this still works
         if self.max_numel_per_batch is not None:
@@ -614,18 +654,27 @@ class UpsampleLoader:
             sampler = MaxImageNumberSampler(self.upsample_data_list, max_numel_per_batch=self.max_numel_per_batch, random=True,
                                                 thresholds=range(2, self.max_numel_per_batch + 1), numel_col=self.numel_col)
             # create a data loader
-            self.data_loader = DataLoader(self.dataset, num_workers=self.num_workers,
-                                          collate_fn=self.collate_fn, pin_memory=True, batch_sampler=sampler)
+            self.data_loader = DataLoader(self.dataset, collate_fn=self.collate_fn, num_workers=self.num_workers,
+                                           pin_memory=True, batch_sampler=sampler)
         else:
-            self.data_loader = DataLoader(self.dataset, num_workers=self.num_workers, batch_size=self.batch_size,
-                                    collate_fn=self.collate_fn, pin_memory=True, shuffle=self.shuffle)
+            self.data_loader = DataLoader(self.dataset, 
+                                        collate_fn=self.collate_fn, 
+                                        batch_size=self.batch_size,
+                                        sampler=self.sampler,
+                                        shuffle=self.shuffle, 
+                                        num_workers=self.num_workers, 
+                                        pin_memory=self.pin_memory, 
+                                        persistent_workers=self.persistent_workers,
+                                        worker_init_fn=self.worker_init_fn)
+
 
     def __iter__(self):
         for batch in self.data_loader:
             yield batch
         # reshuffle and re-sample the negative cases every epoch
-        if self.shuffle:
+        if self.upsample_shuffle:
             self.resample()
+            print("shuffle")
 
     def __len__(self):
         return len(self.data_loader)
