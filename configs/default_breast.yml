@@ -1,5 +1,5 @@
 data:
-  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist.pkl
+  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist_08302023.pkl
   datalist_prefix: /gpfs/data/geraslab/Yanqi/image-to-text/mammo_data
   img_dir: /gpfs/data/geraslab/jp4989/data/2021.07.16.combined_ffdm_cropped
   segmentation_dir: /gpfs/data/geraslab/jp4989/extract_dbt_segmentation/2022.06.12.cropped_segmentation
@@ -11,7 +11,7 @@ data:
   # the differences become academic.
   shuffle_buffer: 10000
   seed: ${train.seed}
-
+  mode: contrastive
   img_aug:
     deit_aug: true
     img_size: [736, 480]

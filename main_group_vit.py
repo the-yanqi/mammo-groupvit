@@ -35,6 +35,7 @@ import os.path as osp
 import time
 from collections import defaultdict
 import numpy as np
+import pandas as pd
 
 import torch
 from torch import nn
@@ -155,7 +156,7 @@ def train(cfg):
         max_metrics = load_checkpoint(cfg, model_without_ddp, optimizer, lr_scheduler)
         max_auroc, max_miou = max_metrics['max_auroc'], max_metrics['max_miou']
         if 'cls' in cfg.evaluate.task:
-            acc1, loss, auroc = validate_cls(cfg, data_loader_val, model)
+            acc1, loss, auroc, breast_auroc = validate_cls(cfg, data_loader_val, model)
         if 'seg' in cfg.evaluate.task:
             miou = validate_seg(cfg, data_loader_seg, model)
         if cfg.evaluate.eval_only:
@@ -180,8 +181,9 @@ def train(cfg):
         #  evaluate
         if (epoch % cfg.evaluate.eval_freq == 0 or epoch == (cfg.train.epochs - 1)):
             if 'cls' in cfg.evaluate.task:
-                acc1, loss, auroc = validate_cls(cfg, data_loader_val, model)
+                acc1, loss, auroc, breast_auroc = validate_cls(cfg, data_loader_val, model)
                 logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc.mean()}')
+                logger.info(f'Breast AUROC of the network on the {len(dataset_val)} test images: {breast_auroc.mean()}')
                 logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
                 max_metrics['max_auroc'] = max(max_metrics['max_auroc'], auroc.mean())
                 if cfg.evaluate.cls.save_best and dist.get_rank() == 0 and auroc.mean() > max_auroc:
@@ -378,6 +380,8 @@ def validate_cls(config, data_loader, model):
     
     all_preds = []
     all_targets = []
+    all_exam_ids = []
+    all_sides = []
 
     text_transform = build_text_transform(False, config.data.text_aug, with_dc=False)
 
@@ -408,6 +412,8 @@ def validate_cls(config, data_loader, model):
      
         all_preds.append(output.detach())
         all_targets.append(target)
+        all_exam_ids.append(samples.pop('meta_id').cuda())
+        all_sides.append(samples.pop('side').cuda())
        
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -426,22 +432,42 @@ def validate_cls(config, data_loader, model):
     #auc_metric.reset()
     gathered_preds = gather_tensors(torch.cat(all_preds))
     gathered_targets = gather_tensors(torch.cat(all_targets))
+    gathered_exam_ids = gather_tensors(torch.cat(all_exam_ids))
+    gathered_sides = gather_tensors(torch.cat(all_sides))
 
     if dist.get_rank() == 0:
-        gathered_targets = torch.cat(gathered_targets).cpu().numpy()
         gathered_preds = torch.cat(gathered_preds)
         if config.data.label_type == 'density':
             gathered_preds = torch.softmax(gathered_preds,dim=-1)
         gathered_preds = gathered_preds.cpu().numpy()
-        auroc = roc_auc_score(gathered_targets, gathered_preds, average=average, multi_class=multi_class)   
+
+        # TODO: think of a better way to evaluate
+        performance_df = pd.DataFrame({
+            'exam_id': torch.cat(gathered_exam_ids).cpu().numpy(),
+            'side': torch.cat(gathered_sides).cpu().numpy(), 
+            'target': list(torch.cat(gathered_targets).cpu().numpy()),
+            'pred': list(gathered_preds)})
+        auroc = roc_auc_score(np.concatenate(performance_df['target']), np.concatenate(performance_df['pred']), average=average, multi_class=multi_class)  
+        
+        g = performance_df.groupby(['exam_id','side']).agg(['max']).reset_index()
+        max_breast_auroc =  roc_auc_score(g['target'], g['pred'], average=average, multi_class=multi_class)
+
+        g = performance_df.groupby(['exam_id','side']).agg(['mean']).reset_index()
+        mean_breast_auroc =  roc_auc_score(g['target'], g['pred'], average=average, multi_class=multi_class) 
+ 
     else:
         auroc = np.array([0,0,0,0])
+        max_breast_auroc = np.array([0,0,0,0])  
+        mean_breast_auroc = np.array([0,0,0,0]) 
+    
     logger.info('Clearing zero shot classifier')
     torch.cuda.empty_cache()
     logger.info(f' * Acc@1 {acc1_meter.avg:.3f}')
     logger.info(f' * AUROC {auroc}')
+    logger.info(f' * breast AUROC max {max_breast_auroc}')
+    logger.info(f' * breast AUROC mean {mean_breast_auroc}')
     dist.barrier()
-    return acc1_meter.avg, loss_meter.avg, auroc
+    return acc1_meter.avg, loss_meter.avg, auroc, max_breast_auroc
 
 @torch.no_grad()
 def validate_seg(config, data_loader, model):
@@ -540,9 +566,9 @@ def main():
 
     # gradient accumulation also need to scale the learning rate
     if cfg.train.accumulation_steps > 1:
-        linear_scaled_lr = linear_scaled_lr * cfg.train.accumulation_steps
-        linear_scaled_warmup_lr = linear_scaled_warmup_lr * cfg.train.accumulation_steps
-        linear_scaled_min_lr = linear_scaled_min_lr * cfg.train.accumulation_steps
+        linear_scaled_lr = linear_scaled_lr #* cfg.train.accumulation_steps
+        linear_scaled_warmup_lr = linear_scaled_warmup_lr #* cfg.train.accumulation_steps
+        linear_scaled_min_lr = linear_scaled_min_lr #* cfg.train.accumulation_steps
 
     with read_write(cfg):
         logger.info(f'Scale base_lr from {cfg.train.base_lr} to {linear_scaled_lr}')

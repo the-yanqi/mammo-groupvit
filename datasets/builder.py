@@ -241,7 +241,7 @@ class Standardizer(object):
         if isinstance(sample, dict):
             transformed_sample = dict()
             image = (sample['image'] - sample['image'].mean()) / torch.max(sample['image'].std(), torch.tensor(10 ** (-5)))
-            
+            #image = image * 1.35 + 0.1 
             bseg =  sample['bseg']
             mseg =  sample['mseg']
             bseg = (bseg > 0).float()

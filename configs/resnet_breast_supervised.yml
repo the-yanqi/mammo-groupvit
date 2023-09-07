@@ -3,7 +3,7 @@ data:
   pos_to_neg_ratio: 1
   num_positives: 50000
   img_aug:
-    img_size: [736, 480]
+    img_size: [1472, 960]
 model:
   type: MultiLabelContrastive
   img_encoder: 'resnet-torchvision'

@@ -180,17 +180,16 @@ def resolve_cancer_label(datum, cancer_label_col="image_cancer_label_mml"):
         else:
             return torch.Tensor([birads_mapping[label]]).long()
 
-def resolve_label(data_pac, label, breast_classes):
+def resolve_label(data_pac, label, classes):
     if label == 'abnormality':
-        text = data_pac['observation_reduced'].lower()
-        label_list = []
-        for i, bclass in enumerate(breast_classes):
-            label_list.append((bclass in text))
-           
-        tensor_label = torch.Tensor(label_list)
+        label_list = data_pac['ab_label']
+        tensor_label = torch.Tensor(label_list)[:1]
+
     elif label == 'density':
-        density_dict = {'extremely dense':0,'fibroglandular':1,'heterogeneous':2,'fatty':3}
-        tensor_label = torch.Tensor([density_dict[data_pac['density']]]).long()
+        for i, dclass in enumerate(classes):
+            if dclass == data_pac['density']:
+                dlabel = i
+        tensor_label = torch.Tensor([dlabel]).long()
 
     elif label == 'cancer':
         tensor_label = resolve_cancer_label(data_pac)
@@ -259,7 +258,7 @@ def load_single_image(data_pac, img_dir, seg_dir, transformations, index,
 
 def load_single_image_text(data_pac,img_dir,seg_dir,image_transformations,text_transformations, 
                             load_img_func, load_segmentation_func, index, 
-                            is_train=True, load_seg=False, cls_classes=['cancer'],label_type = 'abnormality'):
+                            is_train=True, load_seg=False, cls_classes=['cancer'],label_type = 'abnormality', mode = 'contras'):
     
     img_pil = load_img_func(data_pac, img_dir)
     
@@ -275,22 +274,26 @@ def load_single_image_text(data_pac,img_dir,seg_dir,image_transformations,text_t
         results = {'image': img}
 
     if is_train:
-        
-        label = resolve_label(data_pac, label_type, cls_classes)
-        breast_classes = {0:'mass',1:'calcification',2:'architectural distortion', 3:'asymmetry'}
-        ab_list = [breast_classes[i]  for i,c in enumerate(label) if c == 1]
-        text = ",".join(ab_list) 
-
-        #text = text_transformations(text)
-        results['text'] = label[:1]
-        # label = resolve_label(data_pac,'abnormality', cls_classes)
-        # results['target'] = label
-        # results['raw_text'] = data_pac['observation']
+        if mode == 'supervised':
+            label = resolve_label(data_pac, label_type, cls_classes)
+            results['text'] = label
+        elif mode == 'simple-contras':
+            label = resolve_label(data_pac, label_type, cls_classes)
+            ab_list = [cls_classes[i]  for i,c in enumerate(label) if c == 1]
+            text = ",".join(ab_list) 
+            text = text_transformations(text)
+            results['text'] = text
+        else:
+            text = text_transformations(data_pac['observation'])
+            results['text'] = text
     else:
         label = resolve_label(data_pac, label_type, cls_classes)
-        results['target'] = label[:1]
+        results['target'] = label
+        results['meta_id'] = int(data_pac['meta_id'])
 
-        #results['text'] = data_pac['density']
+        views = {'l':0,'r':1}
+        results['side'] = views[data_pac['View'][:1]]
+
     return results
 
 def collect_annotations(bseg, mseg):
@@ -538,12 +541,9 @@ def check_positive_random(x):
 class ImageTextDataset(Dataset):
     def __init__(self, data_list, datalist_prefix, img_dir, seg_dir, imaging_modality, image_transformations, text_transformations,
                  check_positive_func=check_positive_abnormality, pos_to_neg_ratio=None, num_positives = None, is_train=True, load_seg = False, 
-                 label_type = 'abnormality'):
+                 label_type = 'abnormality', cls_classes = ['mass'], mode = 'contras'):
         self.label_type = label_type
-        if self.label_type == 'abnormality':
-            self.cls_classes = ['mass','calcification','architectural distortion', 'asymmetr'] 
-        elif self.label_type == 'density':
-            self.cls_classes = ['extremely dense','fibroglandular','heterogeneous','fatty']
+        self.cls_classes = cls_classes
         # purge datalist:
         self.pos_to_neg_ratio = pos_to_neg_ratio
         self.check_positive_func = check_positive_func
@@ -552,6 +552,7 @@ class ImageTextDataset(Dataset):
         self.datalist_prefix = datalist_prefix
         self.is_train = is_train
         self.load_seg = load_seg
+        self.mode = mode
 
         # Need to modify for new datalist
         self.positive_cases = [x for x in self.data_list if self.check_positive_func(x)]
@@ -615,7 +616,8 @@ class ImageTextDataset(Dataset):
                                  is_train=self.is_train,
                                  load_seg=self.load_seg,
                                  cls_classes=self.cls_classes,
-                                 label_type=self.label_type)
+                                 label_type=self.label_type,
+                                 mode=self.mode)
 
     def __len__(self):
         return len(self.data_list)

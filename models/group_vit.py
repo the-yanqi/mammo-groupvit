@@ -810,7 +810,7 @@ class GroupViT(nn.Module):
         return pos_embed
 
     @property
-    def width(self):
+    def output_dim(self):
         return self.num_features
 
     def _init_weights(self, m):

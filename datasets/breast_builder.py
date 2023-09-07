@@ -11,6 +11,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from breast_datasets import ImageTextDataset, BreastDataset, UpsampleLoader
 from datasets.builder import build_text_transform, build_breast_transform
+from .imagenet_template import breast_classes, density_classes
 
 def worker_init_fn(worker_id, num_workers, rank, seed):
     # The seed of each worker equals to
@@ -52,6 +53,7 @@ def get_breast_dataset(datalist_dir,
     ts_text_transformations = build_text_transform(is_train=False, config=config.text_aug)
     
     if data_mode == 'image':
+        cls_classes = density_classes if config.label_type == 'density' else breast_classes 
         tr_ds = ImageTextDataset(data_list=meta_datalist['train'],
                                  datalist_prefix = datalist_prefix,
                                           img_dir=img_dir,
@@ -63,11 +65,13 @@ def get_breast_dataset(datalist_dir,
                                           num_positives=config.num_positives,
                                           is_train=True,
                                           load_seg=False,
-                                          label_type=config.label_type)
+                                          label_type=config.label_type,
+                                          cls_classes=cls_classes,
+                                          mode=config.mode)
         val_ds = ImageTextDataset(meta_datalist['val'], datalist_prefix, img_dir, segmentation_dir, imaging_modality, val_transformations,  
-                                        val_text_transformations,is_train=False,load_seg=load_seg,label_type=config.label_type)
+                                        val_text_transformations,is_train=False,load_seg=load_seg,label_type=config.label_type, cls_classes=cls_classes, mode=config.mode)
         ts_ds = ImageTextDataset(meta_datalist['test'], datalist_prefix, img_dir, segmentation_dir, imaging_modality, ts_transformations, 
-                                        val_text_transformations,is_train=False,load_seg=load_seg, label_type=config.label_type)
+                                        val_text_transformations,is_train=False,load_seg=load_seg, label_type=config.label_type, cls_classes=cls_classes, mode=config.mode)
     elif data_mode == 'breast':
         train_dl = BreastDataset.group_dl_for_breast(meta_datalist['train'])
         val_dl = BreastDataset.group_dl_for_breast(meta_datalist['val'])

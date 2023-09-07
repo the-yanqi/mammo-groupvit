@@ -115,8 +115,9 @@ class MultiLabelContrastive(nn.Module):
                 self.cross_entropy = torch.nn.BCEWithLogitsLoss()
             else:
                 self.cross_entropy = torch.nn.CrossEntropyLoss()
+
             if img_encoder != 'resnet-torchvision':
-                self.projector = ProjectMLP(in_dim=output_dim, num_layers=2, out_dim=1)
+                self.projector = ProjectMLP(in_dim=self.img_encoder.output_dim, num_layers=2, out_dim=1)
             else:
                 self.projector = nn.Identity()
 
@@ -124,7 +125,7 @@ class MultiLabelContrastive(nn.Module):
         self.multi_label = multi_label
         if proj_num_layers > 0:
             self.img_projector = ProjectMLP(
-                in_dim=self.img_encoder.width, num_layers=proj_num_layers, out_dim=output_dim)
+                in_dim=self.img_encoder.output_dim, num_layers=proj_num_layers, out_dim=output_dim)
             self.text_projector = ProjectMLP(
                 in_dim=self.text_encoder.width, num_layers=proj_num_layers, out_dim=output_dim)
             self.img_projector = nn.SyncBatchNorm.convert_sync_batchnorm(self.img_projector)
@@ -143,7 +144,6 @@ class MultiLabelContrastive(nn.Module):
         return self.multi_label > 0
 
     def loss(self, image_x, text_x):
-
         batch_size = image_x.shape[0]
         # get label globally
         labels = torch.arange(batch_size, dtype=torch.long, device=image_x.device) + batch_size * dist.get_rank()
@@ -288,7 +288,7 @@ class MultiLabelContrastive(nn.Module):
 
     def forward_train_supervised(self, image, text):
         image_x = self.img_encoder(image)
-        logits_per_img = self.projector(image_x) 
+        logits_per_img = self.projector(image_x)
         # [B, C]
 
         logit_scale = torch.clamp(self.logit_scale.exp(), max=100)

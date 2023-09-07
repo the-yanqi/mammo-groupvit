@@ -56,6 +56,7 @@ data:
     word_type: 'noun'
 
 train:
+  slurm: false
   start_epoch: 0
   epochs: 30
   warmup_epochs: 2

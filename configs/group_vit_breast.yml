@@ -1,10 +1,17 @@
 _base_: 'default_breast.yml'
-
+data: 
+  pos_to_neg_ratio: 1
+  num_positives: 50000
+  img_aug:
+    img_size: [736, 480]
+  mode: simple-contras
 model:
   type: MultiLabelContrastive
   img_encoder:
     type: GroupViT
+    img_size: ${data.img_aug.img_size} 
     embed_dim: 384
+    patch_size: 16
     num_heads: [6, 6, 6]
     depths: [6, 3, 3]
     num_group_tokens: [64, 8, 0]
@@ -28,4 +35,8 @@ evaluate:
     - cls
 checkpoint:
   auto_resume: false
-  
+  save_freq: 5
+  resume: '/gpfs/data/geraslab/Yanqi/image-to-text/pretrained_weights/group_vit_gcc_redcap_30e-3dd09a76.pth'
+train:
+  epochs: 50
+  base_lr: 1e-4

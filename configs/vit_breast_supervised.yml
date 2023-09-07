@@ -10,10 +10,10 @@ model:
   img_encoder:
     type: VisionTransformer
     input_resolution: ${data.img_aug.img_size} 
-    patch_size: 32
-    width: 768
+    patch_size: 32 #32
+    width: 768 #768
     layers: 12
-    heads: 12
+    heads: 12 #12
     output_dim: 512
   text_encoder:
     type: TextTransformer

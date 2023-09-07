@@ -50,14 +50,14 @@ def load_checkpoint(config, model, optimizer, lr_scheduler):
     state_dict = checkpoint['model']
 
     #bicubic interpolate positional_embedding if not match
-    pos_embed_keys = [k for k in state_dict.keys() if "positional_embedding" in k]
+    pos_embed_keys = [k for k in state_dict.keys() if "img_encoder.positional_embedding" in k]
     for k in pos_embed_keys:
         # dpe
         pos_embed_pretrained = state_dict[k]
         pos_embed_current = model.state_dict()[k]
       
         patch_size = config.model.img_encoder.patch_size 
-        input_resolution = config.model.img_encoder.input_resolution
+        input_resolution = config.data.img_aug.img_size
         L1, C1 = pos_embed_pretrained.size()
         L2, C2 = pos_embed_current.size()
  
@@ -77,6 +77,33 @@ def load_checkpoint(config, model, optimizer, lr_scheduler):
                 pos_embed_pretrained_resized = pos_embed_pretrained_resized.permute(0, 2, 3, 1)
                 pos_embed_pretrained_resized = pos_embed_pretrained_resized.view(-1, C1)
                 state_dict[k] = torch.cat((cls_embed_pretrained.unsqueeze(0), pos_embed_pretrained_resized), dim=0)
+
+    # groupvit interpolate positional embedding
+    pos_embed_keys = [k for k in state_dict.keys() if "img_encoder.pos_embed" in k]
+    for k in pos_embed_keys:
+        # dpe
+        pos_embed_pretrained = state_dict[k]
+        pos_embed_current = model.state_dict()[k]
+      
+        patch_size = config.model.img_encoder.patch_size 
+        input_resolution = config.data.img_aug.img_size
+        _, L1, C1 = pos_embed_pretrained.size()
+        _, L2, C2 = pos_embed_current.size()
+ 
+        if C1 != C1:
+            print(f"Error in loading {k}, passing......")
+        else:
+            if L1 != L2:
+                S1 = int(L1 ** 0.5)
+                S2 = ((input_resolution[0] // patch_size), (input_resolution[1] // patch_size))
+                pos_embed_pretrained = pos_embed_pretrained.reshape(1, S1, S1, C1)
+                pos_embed_pretrained = pos_embed_pretrained.permute(0, 3, 1, 2)
+                pos_embed_pretrained_resized = torch.nn.functional.interpolate(
+                    pos_embed_pretrained, size=S2, mode='bicubic')
+                pos_embed_pretrained_resized = pos_embed_pretrained_resized.permute(0, 2, 3, 1)
+                pos_embed_pretrained_resized = pos_embed_pretrained_resized.flatten(1, 2)
+                state_dict[k] = pos_embed_pretrained_resized
+
 
     msg = model.load_state_dict(state_dict, strict=False)
     logger.info(msg)
