@@ -8,10 +8,10 @@
 # Written by Jiarui Xu
 # -------------------------------------------------------------------------
 
-from .builder import build_seg_dataloader, build_seg_dataset, build_seg_demo_pipeline, build_seg_inference
+from .builder import build_seg_dataloader, build_seg_dataset, build_seg_demo_pipeline, build_seg_inference, build_seg_breast_pipeline
 from .group_vit_seg import GROUP_PALETTE, GroupViTSegInference
 
 __all__ = [
     'GroupViTSegInference', 'build_seg_dataset', 'build_seg_dataloader', 'build_seg_inference',
-    'build_seg_demo_pipeline', 'GROUP_PALETTE'
+    'build_seg_demo_pipeline', 'build_seg_breast_pipeline', 'GROUP_PALETTE'
 ]

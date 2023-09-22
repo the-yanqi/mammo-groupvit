@@ -267,6 +267,6 @@ imagenet_classes = [
 ]
 
 
-breast_classes = ['mass']#,'calcification','architectural distortion', 'asymmetry']
+breast_classes = ['mass','calcification']
 
 density_classes = ['extremely dense','fibroglandular','heterogeneous','fatty']

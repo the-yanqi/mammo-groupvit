@@ -159,7 +159,7 @@ class LoadBreastImageFromFile(object):
 
 def build_seg_breast_pipeline():
     """Build a demo pipeline from config."""
-    img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
+    img_norm_cfg = dict(to_rgb=True)
     meta_keys = dict(meta_keys=['PatientID','StudyUID', 'View', 'ori_shape',
                             'img_shape', 'pad_shape', 'scale_factor', 'flip',
                             'flip_direction', 'img_norm_cfg'])
@@ -173,7 +173,7 @@ def build_seg_breast_pipeline():
                 dict(type='Resize', keep_ratio=True),
                 dict(type='RandomFlip'),
                 dict(type='ImageToTensor', keys=['img']),
-                dict(type='NormalizeTensor', **img_norm_cfg),
+                dict(type='StandardizerTensor', **img_norm_cfg),
                 dict(type='Collect', keys=['img'], **meta_keys),
             ])
     ])

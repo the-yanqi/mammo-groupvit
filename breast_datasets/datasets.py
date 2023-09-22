@@ -183,7 +183,8 @@ def resolve_cancer_label(datum, cancer_label_col="image_cancer_label_mml"):
 def resolve_label(data_pac, label, classes):
     if label == 'abnormality':
         label_list = data_pac['ab_label']
-        tensor_label = torch.Tensor(label_list)[:1]
+        label_list = [1 if sum(label_list[:3])> 0 else 0, label_list[-1]]
+        tensor_label = torch.Tensor(label_list)
 
     elif label == 'density':
         for i, dclass in enumerate(classes):
@@ -526,7 +527,9 @@ class BreastDataset(Dataset):
         return len(self.data_list)
 
 def check_positive_abnormality(x):
-    if np.array(x['ab_label'][0]).sum() == 0:
+    label_list = x['ab_label'] 
+    ab_label = [1 if sum(label_list[:3])> 0 else 0, label_list[-1]]
+    if sum(ab_label) == 0:
         return False
     else:
         return True

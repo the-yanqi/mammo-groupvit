@@ -67,6 +67,7 @@ except ImportError:
 def parse_args():
     parser = argparse.ArgumentParser('GroupViT training and evaluation script')
     parser.add_argument('--cfg', type=str, required=True, help='path to config file')
+    parser.add_argument('--port', type=str, default='29500', help='master port')
     parser.add_argument('--opts', help="Modify config options by adding 'KEY=VALUE' list. ", default=None, nargs='+')
     parser.add_argument('--slurm', action='store_true', help='Whether environment on slurm')
     # easy config modification
@@ -439,26 +440,34 @@ def validate_cls(config, data_loader, model):
         gathered_preds = torch.cat(gathered_preds)
         if config.data.label_type == 'density':
             gathered_preds = torch.softmax(gathered_preds,dim=-1)
+        gathered_targets = torch.cat(gathered_targets).cpu().numpy()
         gathered_preds = gathered_preds.cpu().numpy()
 
         # TODO: think of a better way to evaluate
         performance_df = pd.DataFrame({
             'exam_id': torch.cat(gathered_exam_ids).cpu().numpy(),
-            'side': torch.cat(gathered_sides).cpu().numpy(), 
-            'target': list(torch.cat(gathered_targets).cpu().numpy()),
-            'pred': list(gathered_preds)})
-        auroc = roc_auc_score(np.concatenate(performance_df['target']), np.concatenate(performance_df['pred']), average=average, multi_class=multi_class)  
+            'side': torch.cat(gathered_sides).cpu().numpy()})
+
+        target_names = []
+        pred_names = []
+        for i,label in enumerate(label_classes): 
+            performance_df['target_{}'.format(label)] = gathered_targets[:,i]
+            performance_df['pred_{}'.format(label)] = gathered_preds[:,i] 
+            target_names.append('target_{}'.format(label))
+            pred_names.append('pred_{}'.format(label))
+
+        auroc = roc_auc_score(performance_df[target_names].to_numpy(), performance_df[pred_names].to_numpy(), average=average, multi_class=multi_class)  
         
         g = performance_df.groupby(['exam_id','side']).agg(['max']).reset_index()
-        max_breast_auroc =  roc_auc_score(g['target'], g['pred'], average=average, multi_class=multi_class)
+        max_breast_auroc =  roc_auc_score(g[target_names].to_numpy(), g[pred_names].to_numpy(), average=average, multi_class=multi_class)
 
         g = performance_df.groupby(['exam_id','side']).agg(['mean']).reset_index()
-        mean_breast_auroc =  roc_auc_score(g['target'], g['pred'], average=average, multi_class=multi_class) 
+        mean_breast_auroc =  roc_auc_score(g[target_names].to_numpy(), g[pred_names].to_numpy(), average=average, multi_class=multi_class) 
  
     else:
-        auroc = np.array([0,0,0,0])
-        max_breast_auroc = np.array([0,0,0,0])  
-        mean_breast_auroc = np.array([0,0,0,0]) 
+        auroc = np.zeros(len(label_classes))
+        max_breast_auroc = np.zeros(len(label_classes))
+        mean_breast_auroc = np.zeros(len(label_classes))
     
     logger.info('Clearing zero shot classifier')
     torch.cuda.empty_cache()
@@ -487,6 +496,8 @@ def validate_seg(config, data_loader, model):
     mmddp_model = MMDistributedDataParallel(
         seg_model, device_ids=[torch.cuda.current_device()], broadcast_buffers=False)
     mmddp_model.eval()
+
+    # multi_gpu_test is removed in mmseg newer version. Instead, to use runner.test in mmengine.
     results = multi_gpu_test(
         model=mmddp_model,
         data_loader=data_loader,
@@ -543,7 +554,7 @@ def main():
     # dist_backend = 'nccl'
 
     if cfg.train.slurm:
-        init_dist('slurm')
+        init_dist('slurm', port=args.port)
     else:
         init_dist('pytorch')#,backend=dist_backend, init_method=dist_url,world_size=world_size, rank=rank)
     print('finish init')
@@ -561,8 +572,8 @@ def main():
 
     # linear scale the learning rate according to total batch size, may not be optimal
     linear_scaled_lr = cfg.train.base_lr #* cfg.data.batch_size * world_size / 4096.0
-    linear_scaled_warmup_lr = cfg.train.warmup_lr * cfg.data.batch_size * world_size / 4096.0
-    linear_scaled_min_lr = cfg.train.min_lr * cfg.data.batch_size * world_size / 4096.0
+    linear_scaled_warmup_lr = cfg.train.warmup_lr #* cfg.data.batch_size * world_size / 4096.0
+    linear_scaled_min_lr = cfg.train.min_lr #* cfg.data.batch_size * world_size / 4096.0
 
     # gradient accumulation also need to scale the learning rate
     if cfg.train.accumulation_steps > 1:

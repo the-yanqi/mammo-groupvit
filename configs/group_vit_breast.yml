@@ -1,7 +1,8 @@
 _base_: 'default_breast.yml'
 data: 
-  pos_to_neg_ratio: 1
-  num_positives: 50000
+  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist_09182023.pkl
+  pos_to_neg_ratio: 3
+  num_positives: 60000
   img_aug:
     img_size: [736, 480]
   mode: simple-contras
@@ -33,10 +34,14 @@ model:
 evaluate:
   task:
     - cls
+    - seg
 checkpoint:
-  auto_resume: false
+  auto_resume: true
   save_freq: 5
   resume: '/gpfs/data/geraslab/Yanqi/image-to-text/pretrained_weights/group_vit_gcc_redcap_30e-3dd09a76.pth'
 train:
-  epochs: 50
+  epochs: 30
   base_lr: 1e-4
+  clip_grad: 1
+  warmup_lr: 1e-7
+  min_lr: 1e-7

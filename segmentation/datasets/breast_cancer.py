@@ -7,17 +7,19 @@
 #
 # Written by Jiarui Xu
 # -------------------------------------------------------------------------
-import pickle
+import pickle, os
 import numpy as np
 from mmseg.datasets import DATASETS, CustomDataset
 from mmcv.utils import print_log
 from mmseg.datasets.builder import PIPELINES
 from mmseg.utils import get_root_logger
+
+import torch
 import torchvision.transforms.functional as F
 from torchvision import transforms
 from breast_datasets import load_mammogram_img, load_segmentation_mammogram
 from torchvision.transforms.functional import InterpolationMode
-import os 
+
 
 @DATASETS.register_module()
 class BreastCancerDataset(CustomDataset):
@@ -26,11 +28,11 @@ class BreastCancerDataset(CustomDataset):
     1 bg class + first 80 classes from the COCO-Stuff dataset.
     """
 
-    CLASSES = ('background', 'mass', 'malignant')
+    CLASSES = ('background', 'mass', 'calcification')
 
-    PALETTE = [[0, 0, 0], [0, 192, 64], [0, 192, 64]]
+    PALETTE = [[0, 0, 0], [0, 192, 64], [0, 64, 96]]
 
-    def __init__(self, datalist_dir, datalist_prefix, dataset_type='val', **kwargs):
+    def __init__(self, datalist_dir, datalist_prefix, dataset_type='seg', **kwargs):
         self.datalist_dir = datalist_dir 
         self.datalist_prefix = datalist_prefix
         self.dataset_type = dataset_type 
@@ -73,9 +75,9 @@ class BreastCancerDataset(CustomDataset):
                 introduced by pipeline.
         """
         meta_data_pac = self.img_infos[idx]
-        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl_file']), "rb") as f:
+        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl']), "rb") as f:
             data = pickle.load(f)
-        img_info = data[meta_data_pac['file_idx']]
+        img_info = data[meta_data_pac['idx']]
 
         results = dict(img_info=img_info)
         self.pre_pipeline(results)
@@ -84,18 +86,33 @@ class BreastCancerDataset(CustomDataset):
     def get_gt_seg_map_by_idx(self, idx):
         """Get one ground truth segmentation map for evaluation."""
         meta_data_pac = self.img_infos[idx]
-        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl_file']), "rb") as f:
+        with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl']), "rb") as f:
             data = pickle.load(f)
-        ann_info = data[meta_data_pac['file_idx']]
+        ann_info = data[meta_data_pac['idx']]
 
         results = dict(ann_info=ann_info)
         self.pre_pipeline(results)
         self.gt_seg_map_loader(results)
         return results['gt_semantic_seg']
 
+    def get_gt_seg_maps(self, efficient_test=None):
+        """Get ground truth segmentation maps for evaluation."""
+        if efficient_test is not None:
+            warnings.warn(
+                'DeprecationWarning: ``efficient_test`` has been deprecated '
+                'since MMSeg v0.16, the ``get_gt_seg_maps()`` is CPU memory '
+                'friendly by default. ')
 
+        for idx in range(len(self)):
+            meta_data_pac = self.img_infos[idx]
+            with open(os.path.join(self.datalist_prefix, meta_data_pac['pkl']), "rb") as f:
+                data = pickle.load(f)
+            ann_info = data[meta_data_pac['idx']]
 
-
+            results = dict(ann_info=ann_info)
+            self.pre_pipeline(results)
+            self.gt_seg_map_loader(results)
+            yield results['gt_semantic_seg']
 
 @PIPELINES.register_module()
 class LoadBreastImageFromFile(object):
@@ -201,7 +218,7 @@ class LoadBreastAnnotations(object):
             dict: The dict contains loaded semantic segmentation annotations.
         """
         benign_seg_np, malignant_seg_np = load_segmentation_mammogram(results['ann_info'], results['seg_prefix'])
-        malignant_seg_np = np.where(malignant_seg_np==1,2,0)
+        #malignant_seg_np = np.where(malignant_seg_np==1,2,0)
         gt_semantic_seg = (benign_seg_np + malignant_seg_np).astype(np.uint8)
 
         # reduce zero_label
@@ -230,7 +247,7 @@ class LoadBreastAnnotations(object):
 
 
 @PIPELINES.register_module()
-class NormalizeTensor(object):
+class StandardizerTensor(object):
     """Normalize the image.
 
     Added key is "img_norm_cfg".
@@ -242,11 +259,9 @@ class NormalizeTensor(object):
             default is true.
     """
 
-    def __init__(self, mean, std, to_rgb=True):
+    def __init__(self, to_rgb=True):
         self.to_rgb = to_rgb
-        self.normalize_func = transforms.Normalize(mean, std, False)
-        self.mean = mean
-        self.std = std
+        
 
     def __call__(self, results):
         """Call function to normalize images.
@@ -258,17 +273,14 @@ class NormalizeTensor(object):
             dict: Normalized results, 'img_norm_cfg' key is added into
                 result dict.
         """
-        results['img'] = results['img'].repeat([3, 1, 1])
-        results['img'] = self.normalize_func(results['img'])            
-        
-
-        results['img_norm_cfg'] = dict(
-            mean=self.mean, std=self.std, to_rgb=self.to_rgb)
+        if self.to_rgb:       
+            results['img'] = results['img'].repeat([3, 1, 1])
+        results['img'] = (results['img'] - results['img'].mean()) / torch.max(results['img'].std(), torch.tensor(10 ** (-5)))   
         return results
 
     def __repr__(self):
         repr_str = self.__class__.__name__
-        repr_str += f'(mean={self.mean}, std={self.std}, to_rgb=' \
+        repr_str += f'(to_rgb=' \
                     f'{self.to_rgb})'
         return repr_str
 

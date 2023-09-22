@@ -221,17 +221,18 @@ class GroupViTSegInference(EncoderDecoder):
         logit_scale = torch.clamp(self.model.logit_scale.exp(), max=100)
         # [G, N]
         group_affinity_mat = (grouped_img_tokens @ text_tokens.T) * logit_scale
-        pre_group_affinity_mat = F.softmax(group_affinity_mat, dim=-1)
+        pre_group_affinity_mat = torch.sigmoid(group_affinity_mat)
 
         avg_affinity_mat = (img_avg_feat @ text_tokens.T) * logit_scale
-        avg_affinity_mat = F.softmax(avg_affinity_mat, dim=-1)
+        avg_affinity_mat = torch.sigmoid(avg_affinity_mat)
         affinity_mask = torch.zeros_like(avg_affinity_mat)
+        # only select top5 class to segment
         avg_affinity_topk = avg_affinity_mat.topk(dim=-1, k=min(5, num_fg_classes))
         affinity_mask.scatter_add_(
             dim=-1, index=avg_affinity_topk.indices, src=torch.ones_like(avg_affinity_topk.values))
         group_affinity_mat.masked_fill_(~affinity_mask.bool(), float('-inf'))
 
-        group_affinity_mat = F.softmax(group_affinity_mat, dim=-1)
+        group_affinity_mat = torch.sigmoid(group_affinity_mat)
 
         # TODO: check if necessary
         group_affinity_mat *= pre_group_affinity_mat

@@ -54,7 +54,7 @@ class Result:
         return outs
 
 
-def interpolate_pos_encoding(pos_embed, H, W):
+def interpolate_pos_encoding(pos_embed, H, W, pos_H=None, pos_W=None):
     num_patches = H * W
     N = pos_embed.shape[1]
     if num_patches == N:
@@ -62,7 +62,7 @@ def interpolate_pos_encoding(pos_embed, H, W):
     patch_pos_embed = pos_embed
     dim = pos_embed.shape[-1]
     patch_pos_embed = F.interpolate(
-        patch_pos_embed.reshape(1, int(math.sqrt(N)), int(math.sqrt(N)), dim).permute(0, 3, 1, 2),
+        patch_pos_embed.reshape(1, pos_H, pos_W, dim).permute(0, 3, 1, 2),
         size=(H, W),
         mode='bicubic',
         align_corners=False)

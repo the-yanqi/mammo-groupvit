@@ -822,18 +822,18 @@ class GroupViT(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def get_pos_embed(self, B, H, W):
+    def get_pos_embed(self, B, H, W, pos_H, pos_W):
         if self.training:
             return self.pos_embed
         pos_embed = self.pos_embed
-        pos_embed = interpolate_pos_encoding(pos_embed, H, W)
+        pos_embed = interpolate_pos_encoding(pos_embed, H, W, pos_H, pos_W)
         return pos_embed
 
     def forward_features(self, x, *, return_attn=False):
         B = x.shape[0]
         x, hw_shape = self.patch_embed(x)
-
-        x = x + self.get_pos_embed(B, *hw_shape)
+        pos_w, pos_h = self.patches_resolution
+        x = x + self.get_pos_embed(B, *hw_shape, pos_h, pos_w)
         x = self.pos_drop(x)
 
         group_token = None

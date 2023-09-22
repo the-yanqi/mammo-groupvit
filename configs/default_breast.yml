@@ -1,5 +1,5 @@
 data:
-  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist_08302023.pkl
+  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist_09182023.pkl
   datalist_prefix: /gpfs/data/geraslab/Yanqi/image-to-text/mammo_data
   img_dir: /gpfs/data/geraslab/jp4989/data/2021.07.16.combined_ffdm_cropped
   segmentation_dir: /gpfs/data/geraslab/jp4989/extract_dbt_segmentation/2022.06.12.cropped_segmentation
@@ -34,7 +34,7 @@ train:
   warmup_epochs: 2
   base_lr: 1.6e-3
   weight_decay: 0.05
-  warmup_lr: 1e-6
+  warmup_lr: 1e-7
   min_lr: 1e-7
   clip_grad: 5.0
   accumulation_steps: 0
