@@ -221,6 +221,9 @@ class LoadBreastAnnotations(object):
         #malignant_seg_np = np.where(malignant_seg_np==1,2,0)
         gt_semantic_seg = (benign_seg_np + malignant_seg_np).astype(np.uint8)
 
+        seg_label =  1 if sum(results['ann_info']['ab_label'][:3])>0 else 2
+        gt_semantic_seg = np.where(gt_semantic_seg==1,seg_label,0)
+
         # reduce zero_label
         if self.reduce_zero_label:
             # avoid using underflow conversion

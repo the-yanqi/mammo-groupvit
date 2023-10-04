@@ -543,7 +543,7 @@ def check_positive_random(x):
 
 class ImageTextDataset(Dataset):
     def __init__(self, data_list, datalist_prefix, img_dir, seg_dir, imaging_modality, image_transformations, text_transformations,
-                 check_positive_func=check_positive_abnormality, pos_to_neg_ratio=None, num_positives = None, is_train=True, load_seg = False, 
+                 check_positive_func=check_positive_random, pos_to_neg_ratio=None, num_positives = None, is_train=True, load_seg = False, 
                  label_type = 'abnormality', cls_classes = ['mass'], mode = 'contras'):
         self.label_type = label_type
         self.cls_classes = cls_classes

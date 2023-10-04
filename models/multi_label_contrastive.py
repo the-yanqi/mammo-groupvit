@@ -97,7 +97,7 @@ class MultiLabelContrastive(nn.Module):
         if img_encoder == 'resnet-torchvision':
             self.img_encoder = resnet50(pretrained=True)
             in_feats = self.img_encoder.fc.in_features
-            self.img_encoder.fc = torch.nn.Linear(in_feats,1)
+            self.img_encoder.fc = torch.nn.Linear(in_feats,2)
         else:
             self.img_encoder = MODELS.build(img_encoder)
             if img_encoder_checkpoint is not None:
@@ -117,7 +117,7 @@ class MultiLabelContrastive(nn.Module):
                 self.cross_entropy = torch.nn.CrossEntropyLoss()
 
             if img_encoder != 'resnet-torchvision':
-                self.projector = ProjectMLP(in_dim=self.img_encoder.output_dim, num_layers=2, out_dim=1)
+                self.projector = ProjectMLP(in_dim=self.img_encoder.output_dim, num_layers=2, out_dim=2)
             else:
                 self.projector = nn.Identity()
 
@@ -345,11 +345,16 @@ class MultiLabelContrastive(nn.Module):
     @torch.no_grad()
     def zero_shot_pred(self, image, text):
         # [B, C]
-     
+
         image_features = self.encode_image(image)
         image_features = F.normalize(image_features, dim=-1)
 
         # cosine similarity as logits
-        logits_per_image = image_features @ text.t()
+        if len(text.shape) == 3:
+            logits_per_image = image_features @ text[0].t()
+            neg_logits_per_image = image_features @ text[1].t()
+            logits_per_image = torch.stack([logits_per_image, neg_logits_per_image])
+        else:
+            logits_per_image = image_features @ text.t()
 
         return logits_per_image

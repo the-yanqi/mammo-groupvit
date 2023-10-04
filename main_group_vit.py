@@ -157,7 +157,7 @@ def train(cfg):
         max_metrics = load_checkpoint(cfg, model_without_ddp, optimizer, lr_scheduler)
         max_auroc, max_miou = max_metrics['max_auroc'], max_metrics['max_miou']
         if 'cls' in cfg.evaluate.task:
-            acc1, loss, auroc, breast_auroc = validate_cls(cfg, data_loader_val, model)
+            loss, auroc, breast_auroc = validate_cls(cfg, data_loader_val, model)
         if 'seg' in cfg.evaluate.task:
             miou = validate_seg(cfg, data_loader_seg, model)
         if cfg.evaluate.eval_only:
@@ -182,7 +182,7 @@ def train(cfg):
         #  evaluate
         if (epoch % cfg.evaluate.eval_freq == 0 or epoch == (cfg.train.epochs - 1)):
             if 'cls' in cfg.evaluate.task:
-                acc1, loss, auroc, breast_auroc = validate_cls(cfg, data_loader_val, model)
+                loss, auroc, breast_auroc = validate_cls(cfg, data_loader_val, model)
                 logger.info(f'AUROC of the network on the {len(dataset_val)} test images: {auroc.mean()}')
                 logger.info(f'Breast AUROC of the network on the {len(dataset_val)} test images: {breast_auroc.mean()}')
                 logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
@@ -208,7 +208,6 @@ def train(cfg):
         if wandb is not None:
             log_stat = {f'epoch/train_{k}': v for k, v in loss_train_dict.items()}
             log_stat.update({
-                'epoch/val_acc1': acc1,
                 'epoch/val_loss': loss,
                 'epoch/val_miou': miou,
                 'epoch/epoch': epoch,
@@ -233,9 +232,13 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
         wandb = None
 
     if config.data.label_type == 'density':
+        criterion = torch.nn.CrossEntropyLoss()
+        label_classes = density_classes
         multi_class = 'ovo'
         average = 'macro'
     else:
+        criterion = torch.nn.BCEWithLogitsLoss()
+        label_classes = breast_classes
         multi_class = 'raise' 
         average = None
     all_preds = []
@@ -256,7 +259,7 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
             losses, output = model(**samples)
             loss, log_vars = parse_losses(losses)
             target = samples.pop('text').cuda()
-            target = data2cuda(target).reshape(-1)
+            target = data2cuda(target)
 
             all_preds.append(output.detach())
             all_targets.append(target) 
@@ -334,19 +337,30 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
                 log_stat['iter/train_total_loss'] = loss_meter.avg
                 log_stat['iter/learning_rate'] = lr
                 wandb.log(log_stat)
-
+                
+    # only compute training metrics for supervised learning
     if config.model.fully_supervised:
         gathered_preds = gather_tensors(torch.cat(all_preds))
         gathered_targets = gather_tensors(torch.cat(all_targets))
         if dist.get_rank() == 0:
-            gathered_targets = torch.cat(gathered_targets).cpu().numpy()
             gathered_preds = torch.cat(gathered_preds)
             if config.data.label_type == 'density':
                 gathered_preds = torch.softmax(gathered_preds,dim=-1)
+            gathered_targets = torch.cat(gathered_targets).cpu().numpy()
             gathered_preds = gathered_preds.cpu().numpy()
-            auroc = roc_auc_score(gathered_targets, gathered_preds, average=average, multi_class=multi_class)   
+
+            performance_df = pd.DataFrame({})
+            target_names = []
+            pred_names = []
+            
+            for i,label in enumerate(label_classes): 
+                performance_df['target_{}'.format(label)] = gathered_targets[:,i]
+                performance_df['pred_{}'.format(label)] = gathered_preds[:,i] 
+                target_names.append('target_{}'.format(label))
+                pred_names.append('pred_{}'.format(label))
+            auroc = roc_auc_score(performance_df[target_names].to_numpy(), performance_df[pred_names].to_numpy(), average=average, multi_class=multi_class)  
         else:
-            auroc = np.array([0])
+            auroc = np.zeros(len(label_classes))
         logger.info(f' * Training AUROC {auroc}')
 
     epoch_time = time.time() - start
@@ -377,7 +391,6 @@ def validate_cls(config, data_loader, model):
 
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
-    acc1_meter = AverageMeter()
     
     all_preds = []
     all_targets = []
@@ -391,27 +404,34 @@ def validate_cls(config, data_loader, model):
     text_embedding = data2cuda(
         model.module.build_text_embedding(
             build_dataset_class_tokens(text_transform, config.evaluate.cls.template, label_classes)))
+    if config.evaluate.cls.negative_text_eval:
+        neg_label_classes = [f'no {label}' for label in label_classes]
+        neg_text_embedding = data2cuda(
+            model.module.build_text_embedding(
+                build_dataset_class_tokens(text_transform, config.evaluate.cls.template, neg_label_classes))) 
+        text_embedding = torch.stack([text_embedding, neg_text_embedding]) 
     logger.info('Zero shot classifier built, load dataloader size {}'.format(len(data_loader)))
     logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     for idx, samples in enumerate(data_loader):
         target = samples.pop('target').cuda()
         target = data2cuda(target)
+
         # compute output
         output = model(image = samples['image'], text=text_embedding)
         # measure accuracy and record loss
         if config.data.label_type == 'density':
             target = target.reshape(-1)
-            acc1, _ = accuracy(output, target, topk=(1, 4))
-        else:
-            acc1, _ = accuracy(output[:,:1], target[:,:1], topk=(1, 1))
 
+        if config.evaluate.cls.negative_text_eval:
+            preds = output.softmax(dim=0)[0]
+            output = output[0]
+        else:
+            preds = torch.sigmoid(output)
         loss = criterion(output, target)
         loss = reduce_tensor(loss)
         loss_meter.update(loss.item(), target.size(0))
-        acc1 = reduce_tensor(acc1)
-        acc1_meter.update(acc1.item(), target.size(0))
-     
-        all_preds.append(output.detach())
+      
+        all_preds.append(preds.detach())
         all_targets.append(target)
         all_exam_ids.append(samples.pop('meta_id').cuda())
         all_sides.append(samples.pop('side').cuda())
@@ -426,7 +446,6 @@ def validate_cls(config, data_loader, model):
             logger.info(f'Test: [{idx}/{len(data_loader)}]\t'
                         f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                         f'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
-                        f'Acc@1 {acc1_meter.val:.3f} ({acc1_meter.avg:.3f})\t'
                         f'Mem {memory_used:.0f}MB\t'
                         f'Ram {ram}')
     #aucs = auc_metric.compute()
@@ -471,12 +490,11 @@ def validate_cls(config, data_loader, model):
     
     logger.info('Clearing zero shot classifier')
     torch.cuda.empty_cache()
-    logger.info(f' * Acc@1 {acc1_meter.avg:.3f}')
     logger.info(f' * AUROC {auroc}')
     logger.info(f' * breast AUROC max {max_breast_auroc}')
     logger.info(f' * breast AUROC mean {mean_breast_auroc}')
     dist.barrier()
-    return acc1_meter.avg, loss_meter.avg, auroc, max_breast_auroc
+    return loss_meter.avg, auroc, max_breast_auroc
 
 @torch.no_grad()
 def validate_seg(config, data_loader, model):
@@ -508,16 +526,22 @@ def validate_seg(config, data_loader, model):
         format_only=False)
     logger.info(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
     if dist.get_rank() == 0:
-        metric = [data_loader.dataset.evaluate(results, metric='mIoU')]
+        metric = [data_loader.dataset.evaluate(results, metric='mIoU'),
+                data_loader.dataset.evaluate(results, metric='mDice')]
     else:
-        metric = [None]
+        metric = [None, None]
     dist.broadcast_object_list(metric)
-    miou_result = metric[0]['mIoU'] * 100
+    mdice_result = metric[1]['mDice'] * 100
+    dice_mass =  metric[1]['Dice.mass'] * 100
+    dice_cal =  metric[1]['Dice.calcification'] * 100  
+    logger.info(f'Raw seg metric {metric}')
 
     torch.cuda.empty_cache()
-    logger.info(f'Eval Seg mIoU {miou_result:.2f}')
+    logger.info(f'Eval Seg mDice {mdice_result:.2f}')
+    logger.info(f'Eval Seg Dice mass {dice_mass:.2f}')
+    logger.info(f'Eval Seg Dice calcification {dice_cal:.2f}')
     dist.barrier()
-    return miou_result
+    return mdice_result
 
 
 def main():

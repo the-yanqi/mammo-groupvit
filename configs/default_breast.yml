@@ -57,6 +57,7 @@ evaluate:
   cls:
     save_best: true
     template: subset
+    negative_text_eval: false
   seg:
     save_best: true
     cfg: /gpfs/data/geraslab/Yanqi/image-to-text/mammo-groupvit/segmentation/configs/_base_/datasets/breast_cancer.py

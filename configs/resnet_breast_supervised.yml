@@ -1,9 +1,11 @@
 _base_: 'default_breast.yml'
-data: 
+data:
+  datalist_dir: /gpfs/data/geraslab/Yanqi/image-to-text/datalist/mammo_jp_09082022_withreport_meta_datalist_09292023_clean.pkl
   pos_to_neg_ratio: 1
-  num_positives: 50000
+  num_positives: 120000
   img_aug:
-    img_size: [1472, 960]
+    img_size: [736, 480]
+  mode: supervised
 model:
   type: MultiLabelContrastive
   img_encoder: 'resnet-torchvision'
@@ -33,10 +35,10 @@ checkpoint:
   auto_resume: false
   save_freq: 5
 train:
-  epochs: 50
+  epochs: 30
   base_lr: 1e-3
   weight_decay: 0.05
-  clip_grad: 5.0
+  clip_grad: 1.0
   
 
 
